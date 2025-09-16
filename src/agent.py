@@ -64,29 +64,33 @@ async def entrypoint(ctx: JobContext):
 
     # Set up a voice AI pipeline using Azure Speech Services and Azure OpenAI
     session = AgentSession(
-        # STT: Azure Speech to Text
-        stt=azure.STT(),  # Берёт AZURE_SPEECH_KEY и REGION из env; для EU — низкий latency
-        
-        # TTS: Azure Speech to Text-to-Speech (Neural voice, подбери под язык; для EN/RU — en-US-JennyNeural или ru-RU-DmitryNeural)
-        tts=azure.TTS(
-            voice="ru-RU-SvetlanaNeural"  # Или твой фаворит из Azure voices (список: docs.microsoft.com/en-us/azure/ai-services/speech-service/language-support); для RU — ru-RU-SvetlanaNeural
+        # STT: Azure Speech to Text с русским
+        stt=azure.STT(
+            speech_key=os.getenv("AZURE_SPEECH_KEY"),
+            speech_region=os.getenv("AZURE_SPEECH_REGION", "francecentral"),
+            language=["ru-RU"]  # Русский для распознавания; добавь "en-US" если мульти нужен
         ),
         
-        # LLM: Azure OpenAI GPT-4o
+        # TTS: Azure Text-to-Speech (уже русский voice)
+        tts=azure.TTS(
+            speech_key=os.getenv("AZURE_SPEECH_KEY"),
+            speech_region=os.getenv("AZURE_SPEECH_REGION", "francecentral"),
+            voice="ru-RU-SvetlanaNeural",
+            language="ru-RU"  # Explicit для надёжности, хотя voice подразумевает
+        ),
+        
+        # LLM без изменений
         llm=openai.LLM.with_azure(
             azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version=os.getenv("OPENAI_API_VERSION", "2024-10-21"),
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),  # Для consistency
-            temperature=0.3  # Управляет креативностью: 0.0 = детерминированный, 1.0 = очень креативный
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+            temperature=0.3
         ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
+        # Остальное как было
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
