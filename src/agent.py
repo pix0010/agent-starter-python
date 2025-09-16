@@ -1,4 +1,5 @@
 import logging
+import os
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -16,7 +17,7 @@ from livekit.agents import (
     metrics,
 )
 from livekit.agents.llm import function_tool
-from livekit.plugins import cartesia, deepgram, noise_cancellation, openai, silero
+from livekit.plugins import azure, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
@@ -61,17 +62,25 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, Deepgram, and the LiveKit turn detector
+    # Set up a voice AI pipeline using Azure Speech Services and Azure OpenAI
     session = AgentSession(
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all providers at https://docs.livekit.io/agents/integrations/llm/
-        llm=openai.LLM(model="gpt-4o-mini"),
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all providers at https://docs.livekit.io/agents/integrations/stt/
-        stt=deepgram.STT(model="nova-3", language="multi"),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all providers at https://docs.livekit.io/agents/integrations/tts/
-        tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
+        # STT: Azure Speech to Text
+        stt=azure.STT(),  # Берёт AZURE_SPEECH_KEY и REGION из env; для EU — низкий latency
+        
+        # TTS: Azure Speech to Text-to-Speech (Neural voice, подбери под язык; для EN/RU — en-US-JennyNeural или ru-RU-DmitryNeural)
+        tts=azure.TTS(
+            voice="ru-RU-SvetlanaNeural"  # Или твой фаворит из Azure voices (список: docs.microsoft.com/en-us/azure/ai-services/speech-service/language-support); для RU — ru-RU-SvetlanaNeural
+        ),
+        
+        # LLM: Azure OpenAI GPT-4o
+        llm=openai.LLM.with_azure(
+            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version=os.getenv("OPENAI_API_VERSION", "2024-10-21"),
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),  # Для consistency
+            temperature=0.3  # Управляет креативностью: 0.0 = детерминированный, 1.0 = очень креативный
+        ),
         # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
         # See more at https://docs.livekit.io/agents/build/turns
         turn_detection=MultilingualModel(),
