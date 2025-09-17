@@ -109,3 +109,17 @@ This project is production-ready and includes a working `Dockerfile`. To deploy 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+Моя файловая структура, к которой я стремлюсь
+
+your-project/
+├─ src/
+│  ├─ agent.py              # ваш минимальный агент
+│  ├─ utils.py              # утилиты: чтение файлов и т.п. (10–15 строк)
+│  └─ tools/
+│     └─ weather.py         # пример самого простого тулса (если нужен)
+├─ prompts/
+│  ├─ system.txt            # системный промпт (инструкции LLM)
+│  └─ greeting.txt          # фраза приветствия (можно оставить пустым)
+├─ .env.local               # ключи и переменные окружения
+└─ uv.lock / pyproject.toml # как обычно
