@@ -20,6 +20,7 @@ from livekit.agents import (
 # from livekit.agents.llm import function_tool  # больше не нужно
 from livekit.plugins import azure, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins.azure.tts import StyleConfig, ProsodyConfig
 
 # 🔽 добавили импорт нашего тулза погоды
 from tools.weather import lookup_weather
@@ -97,6 +98,25 @@ async def entrypoint(ctx: JobContext):
             # Если self-hosted — параметр noise_cancellation убери
             noise_cancellation=noise_cancellation.BVC(),
         ),
+    )
+
+    # 1) Стиль речи (подбери один из: "customer-service", "assistant", "friendly", "cheerful")
+    session.tts.update_options(
+        style=StyleConfig(
+            style="cheerful",  # 👈 обратите внимание: без дефиса чаще всего
+            # role можно не задавать, если не нужно: role="YoungAdultFemale" и т.п. зависят от голоса
+            # degree — «насколько выражен» стиль (если поддерживается конкретным voice)
+            degree=1.0,                # 0.01–2.0 (пример диапазона; см. поддерживаемость голосом)
+        )
+    )
+
+    # 2) Просодия: скорость/тон/громкость (SSML-совместимые значения)
+    session.tts.update_options(
+        prosody=ProsodyConfig(
+            rate="fast",    # чуть быстрее (например, +5%..+10%), Prosody rate must be one of 'x-slow', 'slow', 'medium', 'fast', 'x-fast'
+            pitch="medium",   # Prosody pitch must be one of 'x-low', 'low', 'medium', 'high', 'x-high
+            volume="medium", # Prosody volume must be one of 'silent', 'x-soft', 'soft', 'medium', 'loud', 'x-loud'
+        )
     )
 
     # Произносим приветствие, если оно задано
