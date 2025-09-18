@@ -1,0 +1,23 @@
+{
+  "currency": "EUR",
+  "services": [
+    {
+      "id": "haircut_men",
+      "name": { "ru": "Стрижка мужская", "es": "Corte de hombre", "en": "Men's haircut" },
+      "duration_min": 45,
+      "price": 25.0
+    },
+    {
+      "id": "beard_trim",
+      "name": { "ru": "Стрижка бороды", "es": "Arreglo de barba", "en": "Beard trim" },
+      "duration_min": 20,
+      "price": 12.0
+    },
+    {
+      "id": "haircut_plus_beard",
+      "name": { "ru": "Стрижка + борода", "es": "Corte + barba", "en": "Haircut + beard" },
+      "duration_min": 60,
+      "price": 35.0
+    }
+  ]
+}

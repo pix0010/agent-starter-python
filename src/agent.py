@@ -22,8 +22,9 @@ from livekit.plugins import azure, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.plugins.azure.tts import StyleConfig, ProsodyConfig
 
-# 🔽 добавили импорт нашего тулза погоды
+# 🔽 добавили импорт наших тулзов
 from tools.weather import lookup_weather
+from tools.barber import load_barber_db, get_services, get_price, get_open_hours, list_staff, get_staff_day
 
 logger = logging.getLogger("agent")
 
@@ -36,12 +37,13 @@ class Assistant(Agent):
             instructions=read_text("prompts/system.txt", default=(
                 "You are a helpful voice AI assistant. Keep answers concise."
             )),
-            tools=[lookup_weather],  # ← подключили внешний инструмент
+            tools=[lookup_weather, get_services, get_price, get_open_hours, list_staff, get_staff_day],  # ← новые тулзы
         )
 
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
+    proc.userdata["barber_db"] = load_barber_db("db/barber")  # ← добавили
 
 
 async def entrypoint(ctx: JobContext):
