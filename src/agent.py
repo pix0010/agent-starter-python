@@ -1,5 +1,7 @@
 import logging
 import os
+import json
+from datetime import datetime
 
 from dotenv import load_dotenv
 from src.utils import read_text
@@ -12,7 +14,8 @@ from livekit.agents import (
     JobProcess,
     MetricsCollectedEvent,
     RoomInputOptions,
-    RunContext,  # можно удалить, если нигде не используется
+    RoomOutputOptions,  # ← добавили
+    RunContext,
     WorkerOptions,
     cli,
     metrics,
@@ -73,6 +76,8 @@ async def entrypoint(ctx: JobContext):
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
+        # → включаем выравнивание текстов по озвучке (для печатного вывода стабильнее)
+        use_tts_aligned_transcript=True,
     )
 
     @session.on("agent_false_interruption")
@@ -87,11 +92,37 @@ async def entrypoint(ctx: JobContext):
         metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
 
+    # --- ЛОГИ ТЕКСТА В РЕАЛЬНОМ ВРЕМЕНИ ---
+    # 1) STT пользователя: partial/final
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(ev):
+        tag = "USER(final)" if getattr(ev, "is_final", False) else "USER(partial)"
+        logger.info(f"{tag}: {getattr(ev, 'transcript', '')}")
+
+    # 2) Финальные элементы истории (сообщение юзера/ассистента уже «добавлено»)
+    @session.on("conversation_item_added")
+    def _on_conversation_item_added(ev):
+        item = getattr(ev, "item", None)
+        role = getattr(item, "role", None)
+        text = getattr(item, "text_content", None)
+        if role in ("assistant", "user") and text:
+            logger.info(f"{role.upper()}: {text}")
+
     async def log_usage():
         summary = usage_collector.get_summary()
         logger.info(f"Usage: {summary}")
 
     ctx.add_shutdown_callback(log_usage)
+
+    # на завершение — сохраняем всю историю беседы в файл
+    async def _save_history():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("logs", exist_ok=True)
+        path = f"logs/transcript_{ctx.room.name}_{ts}.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(session.history.to_dict(), f, ensure_ascii=False, indent=2)
+        logger.info(f"Transcript saved to {path}")
+    ctx.add_shutdown_callback(_save_history)
 
     await session.start(
         agent=Assistant(),
@@ -100,6 +131,8 @@ async def entrypoint(ctx: JobContext):
             # Если self-hosted — параметр noise_cancellation убери
             noise_cancellation=noise_cancellation.BVC(),
         ),
+        # → текст сразу в консоль, без «привязки» к аудиопотоку (меньше задержка вывода)
+        room_output_options=RoomOutputOptions(sync_transcription=False),
     )
 
     # 1) Стиль речи (подбери один из: "customer-service", "assistant", "friendly", "cheerful")
