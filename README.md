@@ -2,124 +2,114 @@
   <img src="./.github/assets/livekit-mark.png" alt="LiveKit logo" width="100" height="100">
 </a>
 
-# LiveKit Agents Starter - Python
+# Стартовый проект LiveKit Agents — Python
 
-A complete starter project for building voice AI apps with [LiveKit Agents for Python](https://github.com/livekit/agents).
+Этот репозиторий развивает базовый шаблон LiveKit Agents и превращает его в голосового помощника барбершопа Turia Cuts в Валенсии. Агент понимает русскую речь (и при необходимости переключается на испанский), озвучивает ответы голосом Azure, использует инструменты для работы с прайс-листом, расписанием мастеров и может рассказать о погоде. Проект остаётся удобной отправной точкой для экспериментов с LiveKit и постепенного наращивания функциональности.
 
-The starter project includes:
+## Что внутри
+- Голосовой агент на базе `livekit-agents` с заранее загруженными Silero VAD и мультиязычной моделью определения очереди речи
+- Интеграция с Azure Speech (STT/TTS) и Azure OpenAI (GPT-4o) с возможностью гибко настраивать стиль и темп синтеза речи
+- Локальная JSON-база барбершопа (`db/barber`) и набор LLM-тулзов для цен, услуг, расписания и доступности мастеров
+- Тулза погоды на Open-Meteo с геокодингом и обработкой ошибок
+- Метрики LiveKit, логирование и заготовка для graceful shutdown (сводка использования в логах)
+- Набор тестов/эвейлов на `pytest`, демонстрирующий, как валидировать вежливость, работу с тулзами и отказы
+- Готовый Dockerfile и Taskfile для быстрой разработки и деплоя
 
-- A simple voice AI assistant based on the [Voice AI quickstart](https://docs.livekit.io/agents/start/voice-ai/)
-- Voice AI pipeline based on [OpenAI](https://docs.livekit.io/agents/integrations/llm/openai/), [Cartesia](https://docs.livekit.io/agents/integrations/tts/cartesia/), and [Deepgram](https://docs.livekit.io/agents/integrations/llm/deepgram/)
-  - Easily integrate your preferred [LLM](https://docs.livekit.io/agents/integrations/llm/), [STT](https://docs.livekit.io/agents/integrations/stt/), and [TTS](https://docs.livekit.io/agents/integrations/tts/) instead, or swap to a realtime model like the [OpenAI Realtime API](https://docs.livekit.io/agents/integrations/realtime/openai)
-- Eval suite based on the LiveKit Agents [testing & evaluation framework](https://docs.livekit.io/agents/build/testing/)
-- [LiveKit Turn Detector](https://docs.livekit.io/agents/build/turns/turn-detector/) for contextually-aware speaker detection, with multilingual support
-- [LiveKit Cloud enhanced noise cancellation](https://docs.livekit.io/home/cloud/noise-cancellation/)
-- Integrated [metrics and logging](https://docs.livekit.io/agents/build/metrics/)
+## Подготовка окружения
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) для управления зависимостями
+- Аккаунт LiveKit (Cloud или self-hosted)
+- Ключи Azure Speech и Azure OpenAI (можно заменить на другие поставщики при необходимости)
+- Опционально: ключи Deepgram и Cartesia, если будете возвращаться к оригинальным настройкам шаблона
 
-This starter app is compatible with any [custom web/mobile frontend](https://docs.livekit.io/agents/start/frontend/) or [SIP-based telephony](https://docs.livekit.io/agents/start/telephony/).
-
-## Dev Setup
-
-Clone the repository and install dependencies to a virtual environment:
-
-```console
-cd agent-starter-python
+```bash
 uv sync
+cp .env.example .env.local  # не забывайте заменить примеры ключей на свои реальные значения
 ```
 
-Set up the environment by copying `.env.example` to `.env.local` and filling in the required values:
+## Переменные окружения
+Основные переменные настраиваются в `.env.local` (автоматически подхватываются через `python-dotenv`):
 
-- `LIVEKIT_URL`: Use [LiveKit Cloud](https://cloud.livekit.io/) or [run your own](https://docs.livekit.io/home/self-hosting/)
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `OPENAI_API_KEY`: [Get a key](https://platform.openai.com/api-keys) or use your [preferred LLM provider](https://docs.livekit.io/agents/integrations/llm/)
-- `DEEPGRAM_API_KEY`: [Get a key](https://console.deepgram.com/) or use your [preferred STT provider](https://docs.livekit.io/agents/integrations/stt/)
-- `CARTESIA_API_KEY`: [Get a key](https://play.cartesia.ai/keys) or use your [preferred TTS provider](https://docs.livekit.io/agents/integrations/tts/)
+- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — подключение к LiveKit
+- `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` — распознавание и синтез речи
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `OPENAI_API_VERSION` — LLM через Azure OpenAI (по умолчанию GPT-4o)
+- При необходимости добавьте ключи других провайдеров (`OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`) и скорректируйте код
 
-You can load the LiveKit environment automatically using the [LiveKit CLI](https://docs.livekit.io/home/cli/cli-setup):
+Для разработки удобно загрузить окружение через LiveKit CLI:
 
 ```bash
 lk app env -w .env.local
 ```
 
-## Run the agent
+## Запуск агента
+Перед первым запуском скачайте модели VAD и определения очереди:
 
-Before your first run, you must download certain models such as [Silero VAD](https://docs.livekit.io/agents/build/turns/vad/) and the [LiveKit turn detector](https://docs.livekit.io/agents/build/turns/turn-detector/):
-
-```console
+```bash
 uv run python src/agent.py download-files
 ```
 
-Next, run this command to speak to your agent directly in your terminal:
+Дальше доступны несколько режимов:
 
-```console
-uv run python src/agent.py console
+```bash
+uv run python src/agent.py console   # общение с агентом прямо из терминала
+uv run python src/agent.py dev       # режим для подключения фронтенда/телефонии в разработке
+uv run python src/agent.py start     # production-режим рабочего процесса
 ```
 
-To run the agent for use with a frontend or telephony, use the `dev` command:
+В проекте есть `taskfile.yaml`, поэтому эквивалентные команды можно запускать через `task install` и `task dev`.
 
-```console
-uv run python src/agent.py dev
+## Структура проекта
+```
+agent-starter-python/
+├─ src/
+│  ├─ agent.py              # точка входа LiveKit Worker: конфигурация STT/TTS/LLM, запуск Assistant
+│  ├─ utils.py              # утилиты (чтение текстовых файлов с подсказками)
+│  └─ tools/                # тулзы, доступные агенту
+│     ├─ barber.py          # работа с локальной БД услуг, сотрудников и расписания
+│     └─ weather.py         # получение погоды через Open-Meteo
+├─ prompts/
+│  ├─ system.txt            # системные инструкции (барбершоп Turia Cuts, 🇷🇺 по умолчанию)
+│  └─ greeting.txt          # приветствие, которое произносится через TTS при старте
+├─ db/barber/               # JSON-база (услуги, сотрудники, график, праздники)
+├─ tests/                   # примеры эвевалов и моков для pytest
+├─ Dockerfile               # готовый образ на базе ghcr.io/astral-sh/uv
+├─ taskfile.yaml            # удобные команды для разработки
+├─ pyproject.toml / uv.lock # управление зависимостями и настройками проекта
+└─ .env.example             # образец переменных окружения (замените значениями для боевой среды)
 ```
 
-In production, use the `start` command:
+## Интеграции и тулзы
+- **Azure Speech STT/TTS** — распознавание речи на русском (при желании добавьте `es-ES`) и синтез голосом `ru-RU-SvetlanaNeural`. Параметры стиля (`StyleConfig`) и просодии (`ProsodyConfig`) можно менять прямо в `src/agent.py`.
+- **Azure OpenAI GPT-4o** — основной LLM, температура снижена до 0.3 для большей предсказуемости ответов.
+- **LiveKit Turn Detector + Silero VAD** — точное определение моментов, когда пользователь говорит, и когда можно отвечать. Файлы подгружаются заранее в `prewarm`.
+- **LiveKit Noise Cancellation** — улучшает качество аудио для облачных развертываний (отключите, если работаете on-premise).
+- **Тулзы барбершопа**: `get_services`, `get_price`, `get_open_hours`, `list_staff`, `get_staff_day` берут данные из `db/barber/*.json`. Удобно локализованы и учитывают выходные/праздники.
+- **Тулза погоды**: `lookup_weather` использует Open-Meteo и возвращает актуальную информацию или объясняет ошибку (тайм-аут, неверный адрес и т.д.).
 
-```console
-uv run python src/agent.py start
-```
+## Тестирование и контроль качества
+Проект содержит примеры эвевалов на `pytest`, которые проверяют дружелюбие ассистента, корректность работы тулзов и умение отказывать на некорректные запросы.
 
-## Frontend & Telephony
-
-Get started quickly with our pre-built frontend starter apps, or add telephony support:
-
-| Platform | Link | Description |
-|----------|----------|-------------|
-| **Web** | [`livekit-examples/agent-starter-react`](https://github.com/livekit-examples/agent-starter-react) | Web voice AI assistant with React & Next.js |
-| **iOS/macOS** | [`livekit-examples/agent-starter-swift`](https://github.com/livekit-examples/agent-starter-swift) | Native iOS, macOS, and visionOS voice AI assistant |
-| **Flutter** | [`livekit-examples/agent-starter-flutter`](https://github.com/livekit-examples/agent-starter-flutter) | Cross-platform voice AI assistant app |
-| **React Native** | [`livekit-examples/voice-assistant-react-native`](https://github.com/livekit-examples/voice-assistant-react-native) | Native mobile app with React Native & Expo |
-| **Android** | [`livekit-examples/agent-starter-android`](https://github.com/livekit-examples/agent-starter-android) | Native Android app with Kotlin & Jetpack Compose |
-| **Web Embed** | [`livekit-examples/agent-starter-embed`](https://github.com/livekit-examples/agent-starter-embed) | Voice AI widget for any website |
-| **Telephony** | [📚 Documentation](https://docs.livekit.io/agents/start/telephony/) | Add inbound or outbound calling to your agent |
-
-For advanced customization, see the [complete frontend guide](https://docs.livekit.io/agents/start/frontend/).
-
-## Tests and evals
-
-This project includes a complete suite of evals, based on the LiveKit Agents [testing & evaluation framework](https://docs.livekit.io/agents/build/testing/). To run them, use `pytest`.
-
-```console
+```bash
 uv run pytest
 ```
 
-## Using this template repo for your own project
+Добавляйте собственные сценарии, чтобы фиксировать бизнес-логику и регрессии по мере роста проекта.
 
-Once you've started your own project based on this repo, you should:
+## Контейнеризация
+`Dockerfile` собирает production-образ на базе официального образа uv:
 
-1. **Check in your `uv.lock`**: This file is currently untracked for the template, but you should commit it to your repository for reproducible builds and proper configuration management. (The same applies to `livekit.toml`, if you run your agents in LiveKit Cloud)
+1. Устанавливает системные зависимости, синхронизирует зависимости через `uv sync --locked`
+2. Копирует проект, запускает `download-files` для предзагрузки моделей
+3. Запускает воркер командой `uv run src/agent.py start`
 
-2. **Remove the git tracking test**: Delete the "Check files not tracked in git" step from `.github/workflows/tests.yml` since you'll now want this file to be tracked. These are just there for development purposes in the template repo itself.
+Для деплоя в LiveKit Cloud или своё окружение следуйте [официальному гайду](https://docs.livekit.io/agents/ops/deployment/).
 
-3. **Add your own repository secrets**: You must [add secrets](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/using-secrets-in-github-actions) for `OPENAI_API_KEY` or your other LLM provider so that the tests can run in CI.
+## Дальнейшая кастомизация
+- Меняйте системный промпт и приветствие в `prompts/`
+- Обновляйте JSON-файлы в `db/barber/` при изменении услуг или расписания
+- Добавляйте новые тулзы в `src/tools/` и подключайте их в `Assistant(..., tools=[...])`
+- Регулируйте языковые настройки STT/TTS, стиль речи и поведение ассистента в `src/agent.py`
+- Подключайте свои фронтенды (React, Flutter, iOS и т.д.) или телефонию через LiveKit — ссылки на готовые примеры есть в документации
 
-## Deploying to production
-
-This project is production-ready and includes a working `Dockerfile`. To deploy it to LiveKit Cloud or another environment, see the [deploying to production](https://docs.livekit.io/agents/ops/deployment/) guide.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-Моя файловая структура, к которой я стремлюсь
-
-your-project/
-├─ src/
-│  ├─ agent.py              # ваш минимальный агент
-│  ├─ utils.py              # утилиты: чтение файлов и т.п. (10–15 строк)
-│  └─ tools/
-│     └─ weather.py         # пример самого простого тулса (если нужен)
-├─ prompts/
-│  ├─ system.txt            # системный промпт (инструкции LLM)
-│  └─ greeting.txt          # фраза приветствия (можно оставить пустым)
-├─ .env.local               # ключи и переменные окружения
-└─ uv.lock / pyproject.toml # как обычно
+## Лицензия
+Проект распространяется по лицензии MIT — см. файл `LICENSE`.
