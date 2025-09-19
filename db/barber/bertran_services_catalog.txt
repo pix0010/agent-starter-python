@@ -1,0 +1,44 @@
+Каталог услуг (ориентиры Booksy; для variable — «точная цена после осмотра»)
+
+— Hombre:
+  MCUT20  — Corte de pelo caballero — 17 € — 20 min
+  CUTB20  — Corte + retoque barba — 16 € — 20 min
+  KID20   — Corte niños — 11 € — 20 min
+  KIDU9_20— Corte niño hasta 9 años — 13 € — 20 min
+  M_BOY60 — Mechas chico — 25 € — 60 min
+  M_BOYTOP60 — Mechas chico zona de arriba — 30 € — 60 min
+
+— Mujer/unisex:
+  FCUT50  — Corte chica — 11 € — 50 min
+  GIRL60  — Corte niña (<12 años) — 17,50 € — 60 min
+  COLOR75 — Color — 19 € — 75 min
+  MECH120 — Mechas — 40 € — 120 min
+  ILUM180 — Iluminación — 59 € — 180 min
+  BALAY180— Mechas Balayage — 54 € — 180 min
+  ENZALIS240 — Enzimoterapia Alisado Natural — precio variable — 240 min
+
+— Secados/peinados:
+  BLOW30  — Secado a mano — 12 € — 30 min
+  MELENA30— Secado melena — 11 € — 30 min
+  SHORT40 — Secado pelo corto — 17 € — 40 min
+  MELPL40 — Secado melena con toque plancha — 15 € — 40 min
+  LONG45  — Secado largo — 20 € — 45 min
+  WAVES40 — Secado con ondas — 14 € — 40 min
+  IRON30  — Planchado — 20 € — 30 min
+  IRON50  — Planchado (largo) — 16 € — 50 min
+
+— Trenzas:
+  BRAID55 — Trenza boxeadora — 30 € — 55 min
+  BRAIDEXT55 — Trenza boxeadora con postizo — 20 € — 55 min
+
+— Permanente:
+  PERM150 — Permanente — 30 € — 150 min
+  PERMTOP180 — Permanente chico (zona arriba) — 50 € — 180 min
+
+— Combos (precio variable):
+  COMBO_CS_75   — Corte y secado — 75 min
+  COMBO_CCS_120 — Color, corte y secado — 120 min
+  COMBO_CMCS_180— Color, mechas, corte y secado — 180 min
+  COMBO_CC_105  — Color y corte — 105 min
+
+Примечание: данные взяты из страницы Booksy Betrán Estilistas (Prices & Durations)

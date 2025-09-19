@@ -1,7 +1,9 @@
 import logging
 import os
+import sys
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from src.utils import read_text
@@ -14,7 +16,7 @@ from livekit.agents import (
     JobProcess,
     MetricsCollectedEvent,
     RoomInputOptions,
-    RoomOutputOptions,  # ← добавили
+    RoomOutputOptions,
     RunContext,
     WorkerOptions,
     cli,
@@ -27,20 +29,61 @@ from livekit.plugins.azure.tts import StyleConfig, ProsodyConfig
 
 # 🔽 добавили импорт наших тулзов
 from tools.weather import lookup_weather
-from tools.barber import load_barber_db, get_services, get_price, get_open_hours, list_staff, get_staff_day
+from tools.barber import (
+    load_barber_db,
+    get_services,
+    get_price,
+    get_open_hours,
+    list_staff,
+    get_staff_day,
+    suggest_slots,
+)
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+_SIMPLE_CONSOLE = os.getenv("AGENT_CONSOLE_SIMPLE", "").lower() in {"1", "true", "yes"}
+if _SIMPLE_CONSOLE:
+    logging.getLogger().setLevel(logging.WARNING)
+    logging.getLogger("livekit").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+
+def _build_instructions() -> str:
+    """Формируем динамические инструкции с учётом текущей даты/времени."""
+    tz = os.getenv("APP_TZ", "Europe/Madrid")
+    now = datetime.now(ZoneInfo(tz))
+    now_str = now.strftime("%Y-%m-%d %H:%M")
+    base_instructions = read_text("prompts/system.txt")
+    dynamic_tail = (
+        f"\n\nТекущее локальное время: {now_str} ({tz}). "
+        "Интерпретируй слова 'сегодня/завтра' относительно этой временной зоны. "
+        "Всегда проверяй факты через доступные инструменты, прежде чем отвечать."
+    )
+    if base_instructions:
+        return base_instructions + dynamic_tail
+    return (
+        "Ты — голосовой ассистент Betrán Estilistas. "
+        "Отвечай на русском, используй инструменты для уточнения фактов."
+        + dynamic_tail
+    )
+
 
 class Assistant(Agent):
-    def __init__(self) -> None:
+    def __init__(self, instructions: str) -> None:
         super().__init__(
-            instructions=read_text("prompts/system.txt", default=(
-                "You are a helpful voice AI assistant. Keep answers concise."
-            )),
-            tools=[lookup_weather, get_services, get_price, get_open_hours, list_staff, get_staff_day],  # ← новые тулзы
+            instructions=instructions,
+            tools=[
+                lookup_weather,
+                get_services,
+                get_price,
+                get_open_hours,
+                list_staff,
+                get_staff_day,
+                suggest_slots,
+            ],
         )
 
 
@@ -82,35 +125,64 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("agent_false_interruption")
     def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
-        logger.info("false positive interruption, resuming")
+        if not _SIMPLE_CONSOLE:
+            logger.info("false positive interruption, resuming")
         session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
 
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
     def _on_metrics_collected(ev: MetricsCollectedEvent):
-        metrics.log_metrics(ev.metrics)
+        if not _SIMPLE_CONSOLE:
+            metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
 
-    # --- ЛОГИ ТЕКСТА В РЕАЛЬНОМ ВРЕМЕНИ ---
-    # 1) STT пользователя: partial/final
+    # ======== ЛОГИ ТЕКСТА: компактно ========
+    _partial = {"active": False, "len": 0}
+
+    def _clear_partial_line():
+        if _partial["active"]:
+            sys.stdout.write("\r" + (" " * _partial["len"]) + "\r")
+            sys.stdout.flush()
+            _partial["active"] = False
+            _partial["len"] = 0
+
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev):
-        tag = "USER(final)" if getattr(ev, "is_final", False) else "USER(partial)"
-        logger.info(f"{tag}: {getattr(ev, 'transcript', '')}")
+        txt = getattr(ev, "transcript", "") or ""
+        if not txt:
+            return
 
-    # 2) Финальные элементы истории (сообщение юзера/ассистента уже «добавлено»)
+        if _SIMPLE_CONSOLE:
+            if getattr(ev, "is_final", False):
+                print(f"USER: {txt}", flush=True)
+        else:
+            if getattr(ev, "is_final", False):
+                _clear_partial_line()
+                logger.info(f"USER: {txt}")
+            else:
+                s = f"USER(partial): {txt}"
+                sys.stdout.write("\r" + s)
+                sys.stdout.flush()
+                _partial["active"] = True
+                _partial["len"] = len(s)
+
     @session.on("conversation_item_added")
     def _on_conversation_item_added(ev):
         item = getattr(ev, "item", None)
         role = getattr(item, "role", None)
         text = getattr(item, "text_content", None)
-        if role in ("assistant", "user") and text:
-            logger.info(f"{role.upper()}: {text}")
+        if role == "assistant" and text:
+            if _SIMPLE_CONSOLE:
+                print(f"ASSISTANT: {text}", flush=True)
+            else:
+                _clear_partial_line()
+                logger.info(f"ASSISTANT: {text}")
 
     async def log_usage():
         summary = usage_collector.get_summary()
-        logger.info(f"Usage: {summary}")
+        if not _SIMPLE_CONSOLE:
+            logger.info(f"Usage: {summary}")
 
     ctx.add_shutdown_callback(log_usage)
 
@@ -121,11 +193,12 @@ async def entrypoint(ctx: JobContext):
         path = f"logs/transcript_{ctx.room.name}_{ts}.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(session.history.to_dict(), f, ensure_ascii=False, indent=2)
-        logger.info(f"Transcript saved to {path}")
+        if not _SIMPLE_CONSOLE:
+            logger.info(f"Transcript saved to {path}")
     ctx.add_shutdown_callback(_save_history)
 
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(instructions=_build_instructions()),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             # Если self-hosted — параметр noise_cancellation убери
