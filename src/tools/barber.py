@@ -1139,67 +1139,26 @@ async def suggest_slots(
             except Exception:
                 pass
         else:
-            # No specific staff — if calendars are configured, compute a union of free slots
-            # across all bookable staff (ids present in GCAL_CALENDAR_MAP). This returns
-            # the first `count` free times, each annotated with staff ids who can take it.
+            # No specific staff — batch freebusy across all bookable staff and annotate union
             import os
             import json as _json
 
             mapping_raw = os.getenv("GCAL_CALENDAR_MAP", "").strip()
             has_creds = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-            if mapping_raw and has_creds:
+            if mapping_raw and has_creds and grouped:
                 try:
                     mapping = _json.loads(mapping_raw) or {}
+                    staff_ids = [str(sid) for sid in mapping.keys()] if isinstance(mapping, dict) else []
                 except Exception:
-                    mapping = {}
+                    staff_ids = []
 
-                try:
-                    from .gcal import filter_slots_with_gcal  # lazy import
-
-                    # Collect and annotate by staff
-                    combined: list[dict] = []
-                    staff_ids = [sid for sid in (mapping.keys() if isinstance(mapping, dict) else [])]
-
-                    for sid in staff_ids:
-                        filtered = filter_slots_with_gcal(str(sid), grouped)
-                        for it in filtered:
-                            item = dict(it)
-                            item.setdefault("staff", [])
-                            if sid not in item["staff"]:
-                                item["staff"].append(str(sid))
-                            combined.append(item)
-
-                    # Merge duplicates (same start and end) and union staff lists
-                    def _key(it: dict):
-                        if "iso" in it:
-                            return (it.get("iso"), it.get("end_time"))
-                        if "group" in it and it.get("group"):
-                            g = it["group"]
-                            start_iso = g[0].get("iso")
-                            end_time = g[-1].get("end_time")
-                            return (start_iso, end_time)
-                        return (None, None)
-
-                    merged_map: dict[tuple, dict] = {}
-                    ordered: list[dict] = []
-                    for it in combined:
-                        k = _key(it)
-                        prev = merged_map.get(k)
-                        if prev is None:
-                            merged_map[k] = it
-                            ordered.append(it)
-                        else:
-                            prev_staff = set(prev.get("staff") or [])
-                            for sid in it.get("staff", []) or []:
-                                if sid not in prev_staff:
-                                    prev_staff.add(sid)
-                                    prev.setdefault("staff", []).append(sid)
-
-                    # Sort by start time and trim
-                    ordered.sort(key=lambda x: x.get("iso") or (x.get("group", [{}])[0].get("iso") if x.get("group") else ""))
-                    grouped = ordered[:count]
-                except Exception:
-                    pass
+                if staff_ids:
+                    try:
+                        from .gcal import filter_slots_with_gcal_multi  # lazy import
+                        annotated = filter_slots_with_gcal_multi(staff_ids, grouped)
+                        grouped = annotated[:count]
+                    except Exception:
+                        pass
 
     return {
         "ok": bool(grouped),

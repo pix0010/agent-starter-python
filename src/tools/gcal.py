@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # Defer heavy imports to runtime to avoid ImportError during static checks
@@ -18,6 +19,7 @@ from . import barber as barber_mod  # reuse service durations and DB
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
 _SERVICE_CACHE: Dict[str, Any] = {}
+_BUSY_CACHE: Dict[tuple, tuple[float, Dict[str, list[tuple[datetime, datetime]]]]] = {}
 
 
 def _load_credentials():
@@ -88,6 +90,42 @@ def _busy_intervals(cal_id: str, start_iso: str, end_iso: str) -> List[Tuple[dat
         e = _parse_iso(b["end"]) if "T" in b["end"] else datetime.fromisoformat(b["end"] + "T00:00:00+00:00")
         rngs.append((s, e))
     return rngs
+
+
+def _busy_intervals_multi(cal_ids: List[str], start_iso: str, end_iso: str) -> Dict[str, List[Tuple[datetime, datetime]]]:
+    """Batch freebusy for multiple calendars with simple TTL cache.
+
+    Returns: map calendar_id -> list[(start_dt, end_dt)].
+    """
+    ids_tuple = tuple(sorted(str(x) for x in cal_ids))
+    key = (ids_tuple, start_iso, end_iso)
+    ttl = float(os.getenv("GCAL_FREEBUSY_TTL", "60") or 60)
+    now = time.monotonic()
+    cached = _BUSY_CACHE.get(key)
+    if cached and (now - cached[0]) < ttl:
+        return cached[1]
+
+    svc = _get_service()
+    body = {
+        "timeMin": start_iso,
+        "timeMax": end_iso,
+        "timeZone": os.getenv("APP_TZ", "Europe/Madrid"),
+        "items": [{"id": cid} for cid in cal_ids],
+    }
+    resp = svc.freebusy().query(body=body).execute()
+    out: Dict[str, List[Tuple[datetime, datetime]]] = {}
+    calendars = (resp.get("calendars") or {})
+    for cid in cal_ids:
+        raw = (calendars.get(cid) or {}).get("busy", []) or []
+        lst: List[Tuple[datetime, datetime]] = []
+        for b in raw:
+            s = _parse_iso(b["start"]) if "T" in b["start"] else datetime.fromisoformat(b["start"] + "T00:00:00+00:00")
+            e = _parse_iso(b["end"]) if "T" in b["end"] else datetime.fromisoformat(b["end"] + "T00:00:00+00:00")
+            lst.append((s, e))
+        out[str(cid)] = lst
+
+    _BUSY_CACHE[key] = (now, out)
+    return out
 
 
 def _event_get(cal_id: str, event_id: str) -> Dict[str, Any]:
@@ -397,4 +435,104 @@ def filter_slots_with_gcal(staff_id: str, slot_items: List[Dict[str, Any]]) -> L
         return [x for x in slot_items if is_free(x)]
     except Exception:
         # On any error, return original list to avoid blocking flow
+        return slot_items
+
+
+def filter_slots_with_gcal_multi(staff_ids: List[str], slot_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Filter/annotate slot items against GCal for many staff in one shot (freebusy batch).
+
+    Returns unique items with `staff` array listing staff_ids that can take the slot.
+    """
+    try:
+        if not slot_items or not staff_ids:
+            return slot_items
+
+        # Compute overall query window
+        first = slot_items[0]
+        if "iso" in first:
+            start_dt = _parse_iso(first["iso"])  # tz-aware
+        elif first.get("group"):
+            start_dt = _parse_iso(first["group"][0]["iso"])  # tz-aware
+        else:
+            return slot_items
+        end_dt = None
+        for it in slot_items:
+            if "iso" in it and it.get("end_time"):
+                s = _parse_iso(it["iso"])  # tz-aware
+                hh, mm = map(int, (it.get("end_time") or "00:00").split(":"))
+                end_candidate = s.replace(hour=hh, minute=mm)
+                end_dt = end_candidate if end_dt is None or end_candidate > end_dt else end_dt
+            elif it.get("group"):
+                g = it["group"]
+                s0 = _parse_iso(g[0]["iso"])  # start
+                hh, mm = map(int, (g[-1].get("end_time") or "00:00").split(":"))
+                end_candidate = s0.replace(hour=hh, minute=mm)
+                end_dt = end_candidate if end_dt is None or end_candidate > end_dt else end_dt
+        if end_dt is None:
+            return slot_items
+
+        # map staff -> calendar id
+        cal_ids: Dict[str, str] = {}
+        for sid in staff_ids:
+            cal_ids[sid] = _calendar_id_for_staff(sid)
+
+        # one-shot freebusy
+        busy_map = _busy_intervals_multi(list(cal_ids.values()), _to_iso(start_dt), _to_iso(end_dt))
+
+        def free_for(cid: str, s: datetime, e: datetime) -> bool:
+            for b_start, b_end in busy_map.get(cid, []) or []:
+                if _intersects(s, e, b_start, b_end):
+                    return False
+            return True
+
+        combined: list[Dict[str, Any]] = []
+        for it in slot_items:
+            # single or grouped
+            if "iso" in it:
+                s = _parse_iso(it["iso"])  # tz-aware
+                hh, mm = map(int, (it.get("end_time") or "00:00").split(":"))
+                e = s.replace(hour=hh, minute=mm)
+            else:
+                g = it.get("group") or []
+                s = _parse_iso(g[0]["iso"])  # type: ignore[index]
+                hh, mm = map(int, (g[-1].get("end_time") or "00:00").split(":"))  # type: ignore[index]
+                e = s.replace(hour=hh, minute=mm)
+
+            item_staff: list[str] = []
+            for sid, cid in cal_ids.items():
+                if free_for(cid, s, e):
+                    item_staff.append(sid)
+            if not item_staff:
+                continue
+            obj = dict(it)
+            obj["staff"] = sorted(set(obj.get("staff", []) + item_staff))
+            combined.append(obj)
+
+        # Merge duplicates by (start_iso,end_time)
+        def _key(obj: Dict[str, Any]):
+            if "iso" in obj:
+                return (obj.get("iso"), obj.get("end_time"))
+            if obj.get("group"):
+                g = obj["group"]
+                return (g[0].get("iso"), g[-1].get("end_time"))
+            return (None, None)
+
+        merged: Dict[tuple, Dict[str, Any]] = {}
+        ordered: list[Dict[str, Any]] = []
+        for it in combined:
+            k = _key(it)
+            prev = merged.get(k)
+            if prev is None:
+                merged[k] = it
+                ordered.append(it)
+            else:
+                prev_staff = set(prev.get("staff") or [])
+                for sid in it.get("staff", []) or []:
+                    if sid not in prev_staff:
+                        prev_staff.add(sid)
+                        prev.setdefault("staff", []).append(sid)
+
+        ordered.sort(key=lambda x: x.get("iso") or (x.get("group", [{}])[0].get("iso") if x.get("group") else ""))
+        return ordered
+    except Exception:
         return slot_items

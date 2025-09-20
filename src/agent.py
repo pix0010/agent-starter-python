@@ -11,8 +11,8 @@ from src.utils import read_text
 from livekit.agents import (
     NOT_GIVEN,
     Agent,
-    AgentFalseInterruptionEvent,
     AgentSession,
+    AgentStateChangedEvent,
     JobContext,
     JobProcess,
     MetricsCollectedEvent,
@@ -23,6 +23,7 @@ from livekit.agents import (
     cli,
     metrics,
 )
+from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
 # from livekit.agents.llm import function_tool  # больше не нужно
 from livekit.plugins import azure, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -74,6 +75,56 @@ def _build_instructions() -> str:
     )
 
 
+def _extract_times(text: str) -> list[str]:
+    import re
+    # Find all HH:MM or H:MM occurrences (24h)
+    return re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", text or "")
+
+
+def _format_time(t: str) -> str:
+    # Drop leading zero in hours: 09:30 -> 9:30
+    if len(t) >= 4 and t[0] == "0":
+        return t[1:]
+    return t
+
+
+def _join_times(times: list[str], lang: str) -> str:
+    if not times:
+        return ""
+    conj = {"ru": " и ", "es": " y ", "en": " and "}.get(lang, " y ")
+    ts = [_format_time(x) for x in times]
+    if len(ts) == 1:
+        return ts[0]
+    return ", ".join(ts[:-1]) + conj + ts[-1]
+
+
+def _humanize_slots_in_text(text: str, lang: str) -> tuple[str, bool]:
+    """Return (new_text, changed) with times compacted into a single line list.
+    Very conservative: only rewrites if detects 2+ times.
+    """
+    times = _extract_times(text)
+    if len(times) < 2:
+        return text, False
+    joined = _join_times(times[:3], lang)
+    # Replace blocks of times separated by newlines or slashes with humanized list
+    # Fallback: append humanized list at the end if shape is unpredictable
+    if text.strip() == "\n".join(times) or "\n" in text:
+        # Replace any line that is exactly a time by comma-joined string once
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if all(ln in times for ln in lines):
+            return joined, True
+    # Generic: inject humanized list after the first sentence
+    prefix = text.strip()
+    # Try to replace first occurrence of the last time sequence with the list
+    import re
+    pattern = re.compile(r"(?:\b(?:[01]?\d|2[0-3]):[0-5]\d\b(?:\s*[,/\n]\s*)?){2,}")
+    new_text, n = pattern.subn(joined, prefix, count=1)
+    if n > 0:
+        return new_text, True
+    # Fallback: append
+    return f"{prefix.rstrip()} — {joined}", True
+
+
 class Assistant(Agent):
     def __init__(self, instructions: str) -> None:
         super().__init__(
@@ -94,6 +145,52 @@ class Assistant(Agent):
                 reschedule_booking,
             ],
         )
+        # Текущий язык TTS для humanize/SSML; обновляется при переключении
+        self.tts_lang = "es-ES"
+
+    # Лёгкая пост-обработка текста перед синтезом: humanize слотов и, опционально, SSML
+    def tts_node(self, text, model_settings):  # type: ignore[override]
+        from livekit.agents.voice.agent import Agent as _BaseAgent
+        import re
+
+        HUMANIZE = (os.getenv("TTS_HUMANIZE_SLOTS", "1").lower() in {"1", "true", "yes"})
+        USE_SSML = (os.getenv("TTS_SLOTS_SSML", "0").lower() in {"1", "true", "yes"})
+
+        # Map to short code
+        lang_long = getattr(self, "tts_lang", "es-ES") or "es-ES"
+        lang_short = "es"
+        if lang_long.startswith("ru"):
+            lang_short = "ru"
+        elif lang_long.startswith("en"):
+            lang_short = "en"
+
+        async def _gen():
+            async for chunk in text:
+                s = str(chunk)
+                changed = False
+                if HUMANIZE:
+                    s, changed = _humanize_slots_in_text(s, lang_short)
+                if USE_SSML and changed:
+                    # Build minimal SSML wrapper (no explicit <voice/>) using configured prosody
+                    rate = os.getenv("TTS_PROSODY_RATE", "fast")
+                    pitch = os.getenv("TTS_PROSODY_PITCH", "medium")
+                    volume = os.getenv("TTS_PROSODY_VOLUME", "medium")
+                    style = os.getenv("TTS_STYLE", "chat")
+                    degree = os.getenv("TTS_STYLE_DEGREE", "1.0")
+                    # strip emojis for SSML safety
+                    s_clean = re.sub(r"[\U00010000-\U0010FFFF]", "", s)
+                    ssml = (
+                        f"<speak version=\"1.0\" xml:lang=\"{lang_long}\">"
+                        f"<mstts:express-as style=\"{style}\" styledegree=\"{degree}\">"
+                        f"<prosody rate=\"{rate}\" pitch=\"{pitch}\" volume=\"{volume}\">"
+                        f"{s_clean}"
+                        f"</prosody></mstts:express-as></speak>"
+                    )
+                    yield ssml
+                else:
+                    yield s
+
+        return _BaseAgent.default.tts_node(self, _gen(), model_settings)
 
 
 def prewarm(proc: JobProcess):
@@ -236,11 +333,7 @@ async def entrypoint(ctx: JobContext):
         except Exception:
             pass
 
-    @session.on("agent_false_interruption")
-    def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
-        if not _SIMPLE_CONSOLE:
-            logger.info("false positive interruption, resuming")
-        session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
+    # В новых версиях LiveKit авторезюм ложных прерываний встроен — ручной resume убран
 
     usage_collector = metrics.UsageCollector()
 
@@ -292,6 +385,32 @@ async def entrypoint(ctx: JobContext):
                 _clear_partial_line()
                 logger.info(f"ASSISTANT: {text}")
 
+    # Короткий «мостик» в моменты размышления (убирает тишину)
+    import time as _time
+    _last_bc = {"t": 0.0}
+
+    def _pick(ru: str, es: str, en: str) -> str:
+        cur = lang_state.get("current", "es")
+        return {"ru": ru, "es": es, "en": en}.get(cur, es)
+
+    @session.on("agent_state_changed")
+    async def _on_agent_state_changed(ev: AgentStateChangedEvent):
+        if getattr(ev, "new_state", "") != "thinking":
+            return
+        now = _time.monotonic()
+        if now - _last_bc["t"] < 2.0:
+            return
+        _last_bc["t"] = now
+        bridge = _pick(
+            ru="Секунду, сверяюсь с расписанием…",
+            es="Un momento, reviso la agenda…",
+            en="One sec, checking the schedule…",
+        )
+        try:
+            await session.say(bridge, allow_interruptions=True, add_to_chat_ctx=False)
+        except Exception:
+            pass
+
     async def log_usage():
         summary = usage_collector.get_summary()
         if not _SIMPLE_CONSOLE:
@@ -325,6 +444,20 @@ async def entrypoint(ctx: JobContext):
         room_output_options=RoomOutputOptions(sync_transcription=False),
     )
 
+    # Фоновое «думание»: мягкое клавиатурное шуршание (в консоли не играет)
+    if os.getenv("THINKING_BG_AUDIO", "0").lower() in {"1", "true", "yes"}:
+        try:
+            _bg = BackgroundAudioPlayer(
+                thinking_sound=[
+                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.12),
+                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.10),
+                ]
+            )
+            await _bg.start(room=ctx.room, agent_session=session)
+            ctx.add_shutdown_callback(_bg.aclose)
+        except Exception:
+            pass
+
     # 1) Стиль речи (из .env)
     session.tts.update_options(style=StyleConfig(style=TTS_STYLE, degree=TTS_STYLE_DEGREE))
 
@@ -341,6 +474,11 @@ async def entrypoint(ctx: JobContext):
             language={"es": "es-ES", "ru": "ru-RU", "en": "en-US"}[detected],
             voice=VOICE_BY_LANG.get(detected, VOICE_BY_LANG["es"]),
         )
+        # keep assistant language for TTS post-processing
+        try:
+            assistant.tts_lang = {"es": "es-ES", "ru": "ru-RU", "en": "en-US"}[detected]
+        except Exception:
+            assistant.tts_lang = "es-ES"
         # 2) LLM: целевой язык ответа
         lang_clause = {
             "es": "Responde en español de forma natural y concisa.",
