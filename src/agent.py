@@ -116,6 +116,31 @@ async def entrypoint(ctx: JobContext):
         "en": os.getenv("AZURE_TTS_VOICE_EN", "en-US-JennyNeural"),
     }
 
+    # --- Параметры TTS (стиль/просодия) из .env ---
+    def _env_choice(var: str, allowed: set[str], default: str) -> str:
+        v = (os.getenv(var) or default).strip().lower()
+        return v if v in allowed else default
+
+    def _env_float(var: str, default: float) -> float:
+        raw = os.getenv(var)
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except Exception:
+            return default
+
+    # Допустимые значения, соответствующие ProsodyConfig
+    _ALLOWED_RATE = {"x-slow", "slow", "medium", "fast", "x-fast"}
+    _ALLOWED_PITCH = {"x-low", "low", "medium", "high", "x-high"}
+    _ALLOWED_VOLUME = {"silent", "x-soft", "soft", "medium", "loud", "x-loud"}
+
+    TTS_STYLE = os.getenv("TTS_STYLE", "chat")
+    TTS_STYLE_DEGREE = _env_float("TTS_STYLE_DEGREE", 1.0)
+    TTS_RATE = _env_choice("TTS_PROSODY_RATE", _ALLOWED_RATE, "fast")
+    TTS_PITCH = _env_choice("TTS_PROSODY_PITCH", _ALLOWED_PITCH, "medium")
+    TTS_VOLUME = _env_choice("TTS_PROSODY_VOLUME", _ALLOWED_VOLUME, "medium")
+
     def _normalize_lang_tag(tag: str) -> str:
         t = (tag or "").lower()
         if t.startswith("es"):
@@ -277,22 +302,11 @@ async def entrypoint(ctx: JobContext):
         room_output_options=RoomOutputOptions(sync_transcription=False),
     )
 
-    # 1) Стиль речи
-    session.tts.update_options(
-        style=StyleConfig(
-            style="chat",
-            degree=1.0,
-        )
-    )
+    # 1) Стиль речи (из .env)
+    session.tts.update_options(style=StyleConfig(style=TTS_STYLE, degree=TTS_STYLE_DEGREE))
 
-    # 2) Просодия: скорость/тон/громкость (SSML‑совместимые значения)
-    session.tts.update_options(
-        prosody=ProsodyConfig(
-            rate="fast",
-            pitch="medium",
-            volume="medium",
-        )
-    )
+    # 2) Просодия из .env
+    session.tts.update_options(prosody=ProsodyConfig(rate=TTS_RATE, pitch=TTS_PITCH, volume=TTS_VOLUME))
 
     # Автосмена языка после первой фразы пользователя — синхронный колбэк + async задача
     lang_state = {"current": "es", "switched_once": False}
