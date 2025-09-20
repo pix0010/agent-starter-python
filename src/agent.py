@@ -226,6 +226,16 @@ async def entrypoint(ctx: JobContext):
         max_tool_steps=4,
     )
 
+    # Опционально: задержать preemptive_generation на первый ход, чтобы избежать гонок
+    _delay_preemptive_first = (os.getenv("AGENT_PREEMPTIVE_DELAY_FIRST_TURN", "0").lower() in {"1", "true", "yes"})
+    _preemptive_gate = {"armed": _delay_preemptive_first}
+    if _preemptive_gate["armed"]:
+        # временно выключаем — включим после первой финальной реплики пользователя
+        try:
+            session.options.preemptive_generation = False  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     @session.on("agent_false_interruption")
     def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
         if not _SIMPLE_CONSOLE:
@@ -349,6 +359,13 @@ async def entrypoint(ctx: JobContext):
             await session.say(ack)
             lang_state["switched_once"] = True
         lang_state["current"] = detected
+        # Если мы задерживали preemptive для первого хода — включим его после подтверждения
+        if _preemptive_gate["armed"]:
+            try:
+                session.options.preemptive_generation = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            _preemptive_gate["armed"] = False
 
     @session.on("user_input_transcribed")
     def _on_lang_autoswitch(ev):
@@ -360,6 +377,13 @@ async def entrypoint(ctx: JobContext):
             return
         detected = _normalize_lang_tag(detected_tag)
         if detected == lang_state["current"]:
+            # Язык не сменился — если preemptive был задержан на первый ход, включим его теперь
+            if _preemptive_gate["armed"]:
+                try:
+                    session.options.preemptive_generation = True  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                _preemptive_gate["armed"] = False
             return
         asyncio.create_task(_apply_lang_switch(detected))
 
