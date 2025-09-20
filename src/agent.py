@@ -288,7 +288,7 @@ async def entrypoint(ctx: JobContext):
     # 2) Просодия: скорость/тон/громкость (SSML‑совместимые значения)
     session.tts.update_options(
         prosody=ProsodyConfig(
-            rate="medium",
+            rate="fast",
             pitch="medium",
             volume="medium",
         )

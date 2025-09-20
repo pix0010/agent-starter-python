@@ -10,4 +10,6 @@ KMS
 *.egg-info
 .pytest_cache
 .ruff_cache
-\nbionic-flux-456618-c2-7e422374aa48.json
+logs/
+# Ignore local service account files
+bionic-flux-*.json
