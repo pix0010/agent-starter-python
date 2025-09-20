@@ -125,6 +125,65 @@ def _humanize_slots_in_text(text: str, lang: str) -> tuple[str, bool]:
     return f"{prefix.rstrip()} — {joined}", True
 
 
+def _ru_hour_genitive(h: int) -> str:
+    # 0/12 -> двенадцати; 1/13 -> часа; 2/14 -> двух; ... 11/23 -> одиннадцати
+    base = {
+        1: "часа",
+        2: "двух",
+        3: "трёх",
+        4: "четырёх",
+        5: "пяти",
+        6: "шести",
+        7: "семи",
+        8: "восьми",
+        9: "девяти",
+        10: "десяти",
+        11: "одиннадцати",
+        12: "двенадцати",
+    }
+    x = h % 12
+    if x == 0:
+        x = 12
+    return base.get(x, "")
+
+
+def _ru_minute_phrase(mm: int) -> str:
+    return "тридцати" if mm == 30 else ""
+
+
+def _summarize_hours_ru(text: str) -> tuple[str, bool]:
+    """Compress patterns like 'с 9:30 до 13:30 и с 15:30 до 20:00' into
+    'с девяти тридцати до восьми, с перерывом на обед'. Conservative; returns (text, False) if no match.
+    """
+    import re
+    # Accept separators 'и' or ',' between intervals
+    m = re.search(
+        r"с\s*(\d{1,2}):(\d{2})\s*до\s*(\d{1,2}):(\d{2})\s*(?:и|,)\s*с\s*(\d{1,2}):(\d{2})\s*до\s*(\d{1,2}):(\d{2})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return text, False
+    h1, m1, h2, m2, h3, m3, h4, m4 = map(int, m.groups())
+    # Earliest start, latest end
+    start_h, start_m = h1, m1
+    end_h, end_m = h4, m4
+    # Only summarize if minutes are :00 or :30 (to keep phrasing natural)
+    if start_m not in (0, 30) or end_m not in (0, 30):
+        return text, False
+    start = _ru_hour_genitive(start_h)
+    end = _ru_hour_genitive(end_h)
+    start_min = _ru_minute_phrase(start_m)
+    # Build: "с девяти тридцати до восьми" etc.
+    parts = ["с", start]
+    if start_min:
+        parts.append(start_min)
+    parts.extend(["до", end])
+    phrase = " ".join(p for p in parts if p)
+    phrase += ", с перерывом на обед"
+    return re.sub(m.re, phrase, text), True
+
+
 class Assistant(Agent):
     def __init__(self, instructions: str) -> None:
         super().__init__(
@@ -171,6 +230,12 @@ class Assistant(Agent):
                 changed = False
                 if HUMANIZE:
                     s, changed = _humanize_slots_in_text(s, lang_short)
+                # Hours summarization (RU only)
+                if (os.getenv("TTS_SUMMARIZE_HOURS", "1").lower() in {"1", "true", "yes"}) and lang_short == "ru":
+                    s2, changed2 = _summarize_hours_ru(s)
+                    if changed2:
+                        s = s2
+                        changed = True
                 if USE_SSML and changed:
                     # Build minimal SSML wrapper (no explicit <voice/>) using configured prosody
                     rate = os.getenv("TTS_PROSODY_RATE", "fast")
@@ -348,6 +413,8 @@ async def entrypoint(ctx: JobContext):
 
     # ======== ЛОГИ ТЕКСТА: компактно ========
     _partial = {"active": False, "len": 0}
+    interaction = {"awaiting_user": False}
+    _last_user_final = {"t": 0.0}
 
     def _clear_partial_line():
         if _partial["active"]:
@@ -367,6 +434,11 @@ async def entrypoint(ctx: JobContext):
                 print(f"USER: {txt}", flush=True)
         else:
             if getattr(ev, "is_final", False):
+                try:
+                    _last_user_final["t"] = _time.monotonic()
+                except Exception:
+                    pass
+                interaction["awaiting_user"] = False
                 _clear_partial_line()
                 logger.info(f"USER: {txt}")
             else:
@@ -387,10 +459,19 @@ async def entrypoint(ctx: JobContext):
             else:
                 _clear_partial_line()
                 logger.info(f"ASSISTANT: {text}")
+            # Если ассистент задал вопрос — ждём пользователя, не бриджим
+            try:
+                t = (text or "").strip()
+                if "?" in t or "¿" in t:
+                    interaction["awaiting_user"] = True
+            except Exception:
+                pass
 
     # Короткий «мостик» в моменты размышления (убирает тишину)
     import time as _time
     _last_bc = {"t": 0.0}
+    _bc_delay_ms = max(0, int(os.getenv("BRIDGE_THINKING_DELAY_MS", "900") or 900))
+    _bc_cooldown_ms = max(0, int(os.getenv("BRIDGE_THINKING_COOLDOWN_MS", "2000") or 2000))
 
     def _pick(ru: str, es: str, en: str) -> str:
         try:
@@ -403,23 +484,42 @@ async def entrypoint(ctx: JobContext):
     def _on_agent_state_changed(ev: AgentStateChangedEvent):
         if getattr(ev, "new_state", "") != "thinking":
             return
-        now = _time.monotonic()
-        if now - _last_bc["t"] < 2.0:
-            return
-        _last_bc["t"] = now
-        bridge = _pick(
-            ru="Секунду, сверяюсь с расписанием…",
-            es="Un momento, reviso la agenda…",
-            en="One sec, checking the schedule…",
-        )
+        started = _time.monotonic()
 
-        async def _say_bridge():
+        async def _say_if_still_thinking():
             try:
+                # Подождать минимальную задержку и убедиться, что всё ещё THINKING
+                await asyncio.sleep(_bc_delay_ms / 1000.0)
+                # Защита: не говорить, если агент уже начал говорить
+                if session.current_speech is not None:
+                    return
+                # Не говорить, если состояние сменилось
+                if getattr(session, "agent_state", "") != "thinking":
+                    return
+                # Не бриджим, если ждём ответа пользователя
+                if interaction.get("awaiting_user"):
+                    return
+                # Кулдаун между бриджами
+                now = _time.monotonic()
+                if (now - _last_bc["t"]) * 1000.0 < _bc_cooldown_ms:
+                    return
+                # Бриджим только после финальной фразы пользователя
+                if _last_user_final["t"] and now - _last_user_final["t"] < (_bc_delay_ms / 1000.0):
+                    # слишком рано после финала — дадим ещё чуть времени
+                    await asyncio.sleep(0.2)
+                    if getattr(session, "agent_state", "") != "thinking":
+                        return
+                bridge = _pick(
+                    ru="Секунду, сверяюсь с расписанием…",
+                    es="Un momento, reviso la agenda…",
+                    en="One sec, checking the schedule…",
+                )
+                _last_bc["t"] = now
                 await session.say(bridge, allow_interruptions=True, add_to_chat_ctx=False)
             except Exception:
                 pass
 
-        asyncio.create_task(_say_bridge())
+        asyncio.create_task(_say_if_still_thinking())
 
     async def log_usage():
         summary = usage_collector.get_summary()
@@ -455,7 +555,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     # Фоновое «думание»: мягкое клавиатурное шуршание (в консоли не играет)
-    if os.getenv("THINKING_BG_AUDIO", "0").lower() in {"1", "true", "yes"}:
+    if (os.getenv("THINKING_BG_AUDIO", "0").lower() in {"1", "true", "yes"}) and not _SIMPLE_CONSOLE:
         try:
             _bg = BackgroundAudioPlayer(
                 thinking_sound=[
