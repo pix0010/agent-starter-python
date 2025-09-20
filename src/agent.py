@@ -88,11 +88,47 @@ def _format_time(t: str) -> str:
     return t
 
 
+def _ru_number_word(n: int) -> str:
+    mapping = {
+        0: "ноль", 1: "один", 2: "два", 3: "три", 4: "четыре", 5: "пять",
+        6: "шесть", 7: "семь", 8: "восемь", 9: "девять", 10: "десять",
+        11: "одиннадцать", 12: "двенадцать",
+    }
+    x = n % 12
+    if x == 0:
+        x = 12
+    return mapping.get(x, str(x))
+
+
+def _ru_minute_simple(mm: int) -> str:
+    simple = {
+        0: "",
+        5: "пять", 10: "десять", 15: "пятнадцать", 20: "двадцать", 25: "двадцать пять",
+        30: "тридцать", 35: "тридцать пять", 40: "сорок", 45: "сорок пять", 50: "пятьдесят", 55: "пятьдесят пять",
+    }
+    return simple.get(mm, f"{mm}")
+
+
+def _ru_time_words(h: int, m: int) -> str:
+    if m == 0:
+        return _ru_number_word(h)
+    return f"{_ru_number_word(h)} {_ru_minute_simple(m)}"
+
+
 def _join_times(times: list[str], lang: str) -> str:
     if not times:
         return ""
     conj = {"ru": " и ", "es": " y ", "en": " and "}.get(lang, " y ")
-    ts = [_format_time(x) for x in times]
+    if lang == "ru":
+        ts = []
+        for x in times:
+            try:
+                hh, mm = x.split(":")
+                ts.append(_ru_time_words(int(hh), int(mm)))
+            except Exception:
+                ts.append(_format_time(x))
+    else:
+        ts = [_format_time(x) for x in times]
     if len(ts) == 1:
         return ts[0]
     return ", ".join(ts[:-1]) + conj + ts[-1]
