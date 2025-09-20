@@ -148,7 +148,8 @@ def _ru_hour_genitive(h: int) -> str:
 
 
 def _ru_minute_phrase(mm: int) -> str:
-    return "тридцати" if mm == 30 else ""
+    mapping = {0: "", 15: "пятнадцати", 30: "тридцати", 45: "сорока пяти"}
+    return mapping.get(mm, "")
 
 
 def _summarize_hours_ru(text: str) -> tuple[str, bool]:
@@ -168,8 +169,8 @@ def _summarize_hours_ru(text: str) -> tuple[str, bool]:
     # Earliest start, latest end
     start_h, start_m = h1, m1
     end_h, end_m = h4, m4
-    # Only summarize if minutes are :00 or :30 (to keep phrasing natural)
-    if start_m not in (0, 30) or end_m not in (0, 30):
+    # Allow :00, :15, :30, :45 for more natural phrases
+    if start_m not in (0, 15, 30, 45) or end_m not in (0, 15, 30, 45):
         return text, False
     start = _ru_hour_genitive(start_h)
     end = _ru_hour_genitive(end_h)
@@ -181,6 +182,96 @@ def _summarize_hours_ru(text: str) -> tuple[str, bool]:
     parts.extend(["до", end])
     phrase = " ".join(p for p in parts if p)
     phrase += ", с перерывом на обед"
+    return re.sub(m.re, phrase, text), True
+
+
+def _es_hour_word(h: int) -> str:
+    mapping = {
+        1: "una", 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco", 6: "seis",
+        7: "siete", 8: "ocho", 9: "nueve", 10: "diez", 11: "once", 12: "doce",
+    }
+    x = h % 12
+    if x == 0:
+        x = 12
+    return mapping.get(x, str(x))
+
+
+def _es_time_phrase(h: int, m: int, *, article: bool = True) -> str:
+    # Build Spanish natural time: "las nueve y media", "las nueve y cuarto", "las diez menos cuarto"
+    if m == 0:
+        return f"las {_es_hour_word(h)}" if article else _es_hour_word(h)
+    if m == 30:
+        return f"las {_es_hour_word(h)} y media" if article else f"{_es_hour_word(h)} y media"
+    if m == 15:
+        return f"las {_es_hour_word(h)} y cuarto" if article else f"{_es_hour_word(h)} y cuarto"
+    if m == 45:
+        nxt = _es_hour_word(h + 1)
+        return f"las {nxt} menos cuarto" if article else f"{nxt} menos cuarto"
+    # Fallback numeric
+    return f"las {_es_hour_word(h)}:{m:02d}" if article else f"{_es_hour_word(h)}:{m:02d}"
+
+
+def _summarize_hours_es(text: str) -> tuple[str, bool]:
+    import re
+    m = re.search(
+        r"de\s*(\d{1,2}):(\d{2})\s*a\s*(\d{1,2}):(\d{2})\s*(?:y|,)\s*de\s*(\d{1,2}):(\d{2})\s*a\s*(\d{1,2}):(\d{2})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return text, False
+    h1, m1, h2, m2, h3, m3, h4, m4 = map(int, m.groups())
+    if m1 not in (0, 15, 30, 45) or m4 not in (0, 15, 30, 45):
+        return text, False
+    start = _es_time_phrase(h1, m1)
+    end = _es_time_phrase(h4, m4)
+    phrase = f"de {start} a {end}, con pausa para comer"
+    return re.sub(m.re, phrase, text), True
+
+
+def _en_hour_word(h: int) -> str:
+    mapping = {
+        1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+        7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
+    }
+    x = h % 12
+    if x == 0:
+        x = 12
+    return mapping.get(x, str(x))
+
+
+def _en_time_phrase(h: int, m: int) -> str:
+    # Natural English: half past nine, quarter past nine, quarter to ten
+    if m == 0:
+        return _en_hour_word(h)
+    if m == 30:
+        return f"half past {_en_hour_word(h)}"
+    if m == 15:
+        return f"quarter past {_en_hour_word(h)}"
+    if m == 45:
+        return f"quarter to {_en_hour_word(h + 1)}"
+    # Fallback numeric like nine twenty
+    minutes = {
+        5: "five", 10: "ten", 20: "twenty", 25: "twenty-five", 35: "thirty-five", 40: "forty",
+    }.get(m, f"{m:02d}")
+    return f"{_en_hour_word(h)} {minutes}"
+
+
+def _summarize_hours_en(text: str) -> tuple[str, bool]:
+    import re
+    m = re.search(
+        r"from\s*(\d{1,2}):(\d{2})\s*to\s*(\d{1,2}):(\d{2})\s*(?:and|,)\s*from\s*(\d{1,2}):(\d{2})\s*to\s*(\d{1,2}):(\d{2})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return text, False
+    h1, m1, h2, m2, h3, m3, h4, m4 = map(int, m.groups())
+    if m1 not in (0, 15, 30, 45) or m4 not in (0, 15, 30, 45):
+        return text, False
+    start = _en_time_phrase(h1, m1)
+    end = _en_time_phrase(h4, m4)
+    phrase = f"from {start} to {end}, with a lunch break"
     return re.sub(m.re, phrase, text), True
 
 
@@ -230,9 +321,16 @@ class Assistant(Agent):
                 changed = False
                 if HUMANIZE:
                     s, changed = _humanize_slots_in_text(s, lang_short)
-                # Hours summarization (RU only)
-                if (os.getenv("TTS_SUMMARIZE_HOURS", "1").lower() in {"1", "true", "yes"}) and lang_short == "ru":
-                    s2, changed2 = _summarize_hours_ru(s)
+                # Hours summarization (RU/ES/EN)
+                if os.getenv("TTS_SUMMARIZE_HOURS", "1").lower() in {"1", "true", "yes"}:
+                    if lang_short == "ru":
+                        s2, changed2 = _summarize_hours_ru(s)
+                    elif lang_short == "es":
+                        s2, changed2 = _summarize_hours_es(s)
+                    elif lang_short == "en":
+                        s2, changed2 = _summarize_hours_en(s)
+                    else:
+                        s2, changed2 = (s, False)
                     if changed2:
                         s = s2
                         changed = True
