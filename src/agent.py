@@ -127,6 +127,22 @@ def _join_times(times: list[str], lang: str) -> str:
                 ts.append(_ru_time_words(int(hh), int(mm)))
             except Exception:
                 ts.append(_format_time(x))
+    elif lang == "es":
+        ts = []
+        for x in times:
+            try:
+                hh, mm = x.split(":")
+                ts.append(_es_time_phrase(int(hh), int(mm), article=False))
+            except Exception:
+                ts.append(_format_time(x))
+    elif lang == "en":
+        ts = []
+        for x in times:
+            try:
+                hh, mm = x.split(":")
+                ts.append(_en_time_phrase(int(hh), int(mm)))
+            except Exception:
+                ts.append(_format_time(x))
     else:
         ts = [_format_time(x) for x in times]
     if len(ts) == 1:
@@ -157,8 +173,24 @@ def _humanize_slots_in_text(text: str, lang: str) -> tuple[str, bool]:
     new_text, n = pattern.subn(joined, prefix, count=1)
     if n > 0:
         return new_text, True
-    # Fallback: append
-    return f"{prefix.rstrip()} — {joined}", True
+    # Fallback: append compact enumeration AND also replace standalone times with words
+    out = f"{prefix.rstrip()} — {joined}"
+    return out, True
+
+
+def _replace_all_times_with_words(text: str, lang: str) -> str:
+    import re
+    def repl(m: re.Match) -> str:
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        if lang == "ru":
+            return _ru_time_words(hh, mm)
+        if lang == "es":
+            return _es_time_phrase(hh, mm, article=False)
+        if lang == "en":
+            return _en_time_phrase(hh, mm)
+        return m.group(0)
+    return re.sub(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", repl, text)
 
 
 def _ru_hour_genitive(h: int) -> str:
@@ -357,6 +389,11 @@ class Assistant(Agent):
                 changed = False
                 if HUMANIZE:
                     s, changed = _humanize_slots_in_text(s, lang_short)
+                    # Ensure any remaining numeric times are spoken as words
+                    s2 = _replace_all_times_with_words(s, lang_short)
+                    if s2 != s:
+                        s = s2
+                        changed = True
                 # Hours summarization (RU/ES/EN)
                 if os.getenv("TTS_SUMMARIZE_HOURS", "1").lower() in {"1", "true", "yes"}:
                     if lang_short == "ru":
