@@ -641,7 +641,7 @@ async def entrypoint(ctx: JobContext):
     # Короткий «мостик» в моменты размышления (убирает тишину)
     import time as _time
     _last_bc = {"t": 0.0}
-    _bc_delay_ms = max(0, int(os.getenv("BRIDGE_THINKING_DELAY_MS", "900") or 900))
+    _bc_delay_ms = max(0, int(os.getenv("BRIDGE_THINKING_DELAY_MS", "600") or 600))
     _bc_cooldown_ms = max(0, int(os.getenv("BRIDGE_THINKING_COOLDOWN_MS", "2000") or 2000))
 
     def _pick(ru: str, es: str, en: str) -> str:
