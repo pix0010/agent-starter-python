@@ -1053,6 +1053,9 @@ async def suggest_slots(
         return a["end_time"] == b["time"] and a["date"] == b["date"]
 
     grouped: List[Dict[str, Any]] = []
+    # Соберём больше вариантов, если ищем «под любого мастера» — пригодится для
+    # последующей унификации по календарям (union across staff)
+    grouped_limit = count if staff is not None else max(count * 4, count)
     i = 0
     while i < len(raw):
         start = raw[i]
@@ -1118,7 +1121,7 @@ async def suggest_slots(
                     )
 
         i += 1 if block_count == 1 else block_count
-        if len(grouped) >= count:
+        if len(grouped) >= grouped_limit:
             break
 
     # Optionally filter against Google Calendar busy intervals
