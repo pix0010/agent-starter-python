@@ -151,6 +151,7 @@ class Assistant(Agent):
     # Лёгкая пост-обработка текста перед синтезом: humanize слотов и, опционально, SSML
     def tts_node(self, text, model_settings):  # type: ignore[override]
         from livekit.agents.voice.agent import Agent as _BaseAgent
+        from livekit.agents.voice.transcription.filters import filter_markdown, filter_emoji
         import re
 
         HUMANIZE = (os.getenv("TTS_HUMANIZE_SLOTS", "1").lower() in {"1", "true", "yes"})
@@ -190,7 +191,9 @@ class Assistant(Agent):
                 else:
                     yield s
 
-        return _BaseAgent.default.tts_node(self, _gen(), model_settings)
+        # Пропускаем через штатные фильтры (markdown/emoji), чтобы TTS не озвучивал эмодзи словами
+        filtered = filter_emoji(filter_markdown(_gen()))
+        return _BaseAgent.default.tts_node(self, filtered, model_settings)
 
 
 def prewarm(proc: JobProcess):
@@ -535,7 +538,7 @@ async def entrypoint(ctx: JobContext):
     # Одно приветствие на испанском (берём первый абзац из greeting.txt)
     greeting_es = _read_spanish_greeting()
     if greeting_es:
-        await session.say(greeting_es)
+        await session.say(greeting_es, allow_interruptions=True)
 
     await ctx.connect()
 
