@@ -180,7 +180,7 @@ class Assistant(Agent):
                     # strip emojis for SSML safety
                     s_clean = re.sub(r"[\U00010000-\U0010FFFF]", "", s)
                     ssml = (
-                        f"<speak version=\"1.0\" xml:lang=\"{lang_long}\">"
+                        f"<speak version=\"1.0\" xml:lang=\"{lang_long}\" xmlns:mstts=\"http://www.w3.org/2001/mstts\">"
                         f"<mstts:express-as style=\"{style}\" styledegree=\"{degree}\">"
                         f"<prosody rate=\"{rate}\" pitch=\"{pitch}\" volume=\"{volume}\">"
                         f"{s_clean}"
@@ -390,11 +390,14 @@ async def entrypoint(ctx: JobContext):
     _last_bc = {"t": 0.0}
 
     def _pick(ru: str, es: str, en: str) -> str:
-        cur = lang_state.get("current", "es")
+        try:
+            cur = lang_state.get("current", "es")  # type: ignore[name-defined]
+        except Exception:
+            cur = "es"
         return {"ru": ru, "es": es, "en": en}.get(cur, es)
 
     @session.on("agent_state_changed")
-    async def _on_agent_state_changed(ev: AgentStateChangedEvent):
+    def _on_agent_state_changed(ev: AgentStateChangedEvent):
         if getattr(ev, "new_state", "") != "thinking":
             return
         now = _time.monotonic()
@@ -406,10 +409,14 @@ async def entrypoint(ctx: JobContext):
             es="Un momento, reviso la agenda…",
             en="One sec, checking the schedule…",
         )
-        try:
-            await session.say(bridge, allow_interruptions=True, add_to_chat_ctx=False)
-        except Exception:
-            pass
+
+        async def _say_bridge():
+            try:
+                await session.say(bridge, allow_interruptions=True, add_to_chat_ctx=False)
+            except Exception:
+                pass
+
+        asyncio.create_task(_say_bridge())
 
     async def log_usage():
         summary = usage_collector.get_summary()
