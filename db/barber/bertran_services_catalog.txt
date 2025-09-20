@@ -1,44 +1,39 @@
-Каталог услуг (ориентиры Booksy; для variable — «точная цена после осмотра»)
+Каталог услуг (актуализировано из info.docx)
 
-— Hombre:
-  MCUT20  — Corte de pelo caballero — 17 € — 20 min
-  CUTB20  — Corte + retoque barba — 16 € — 20 min
-  KID20   — Corte niños — 11 € — 20 min
-  KIDU9_20— Corte niño hasta 9 años — 13 € — 20 min
-  M_BOY60 — Mechas chico — 25 € — 60 min
-  M_BOYTOP60 — Mechas chico zona de arriba — 30 € — 60 min
-
-— Mujer/unisex:
-  FCUT50  — Corte chica — 11 € — 50 min
-  GIRL60  — Corte niña (<12 años) — 17,50 € — 60 min
-  COLOR75 — Color — 19 € — 75 min
-  MECH120 — Mechas — 40 € — 120 min
-  ILUM180 — Iluminación — 59 € — 180 min
-  BALAY180— Mechas Balayage — 54 € — 180 min
-  ENZALIS240 — Enzimoterapia Alisado Natural — precio variable — 240 min
-
-— Secados/peinados:
-  BLOW30  — Secado a mano — 12 € — 30 min
-  MELENA30— Secado melena — 11 € — 30 min
-  SHORT40 — Secado pelo corto — 17 € — 40 min
-  MELPL40 — Secado melena con toque plancha — 15 € — 40 min
-  LONG45  — Secado largo — 20 € — 45 min
-  WAVES40 — Secado con ondas — 14 € — 40 min
-  IRON30  — Planchado — 20 € — 30 min
-  IRON50  — Planchado (largo) — 16 € — 50 min
-
-— Trenzas:
-  BRAID55 — Trenza boxeadora — 30 € — 55 min
-  BRAIDEXT55 — Trenza boxeadora con postizo — 20 € — 55 min
-
-— Permanente:
-  PERM150 — Permanente — 30 € — 150 min
-  PERMTOP180 — Permanente chico (zona arriba) — 50 € — 180 min
-
-— Combos (precio variable):
-  COMBO_CS_75   — Corte y secado — 75 min
-  COMBO_CCS_120 — Color, corte y secado — 120 min
-  COMBO_CMCS_180— Color, mechas, corte y secado — 180 min
-  COMBO_CC_105  — Color y corte — 105 min
-
-Примечание: данные взяты из страницы Booksy Betrán Estilistas (Prices & Durations)
+— Популярные услуги:
+  SVC001  — Мужская стрижка (Corte de pelo caballero)[11] — 17 € — 20 min
+  SVC002  — Стрижка + коррекция бороды (Corte más retoque barba)[13] — 16 € — 20 min
+  SVC003  — Детская стрижка (Corte niños)[14] — 11 € — 20 min
+  SVC004  — Стрижка ребёнка до 9 лет (Corte de Niño hasta 9 años)[15] — 13 € — 20 min
+  SVC005  — Уход за бровями (Cejas)[16] — 5 € — 20 min
+— Эстетика:
+  SVC006  — Брови (Cejas)[16] — 5 € — 20 min
+  SVC007  — Пресотерапия (лимфодренаж) (Presoterapia)[17] — 50 € — 15 min
+  SVC008  — Абонемент на 10 сеансов по 45 мин[18] — 30 € — 15 min
+  SVC009  — Абонемент на 5 сеансов по 45 мин[19] — 10 € — 15 min
+— Парикмахерские услуги (Peluquería):
+  SVC010  — Химическая завивка (Permanente)[20] — 30 € — 150 min
+  SVC011  — Завивка (верхняя зона для мужчин)[21] — 50 € — 180 min
+  SVC012  — Мелирование (Mechas)[22] — 40 € — 120 min
+  SVC013  — Осветление (Iluminación)[23] — 59 € — 180 min
+  SVC014  — Balayage (Mechas Balayage)[24] — 54 € — 180 min
+  SVC015  — Алгоритм натурального кератинового выпрямления (Enzimoterapia Alisado Natural) – цена зависит от длины[25] — Переменная — 240 min
+  SVC016  — Женская стрижка (Corte chica)[26] — 11 € — 50 min
+  SVC017  — Стрижка девочек < 12 лет (Corte niña menor de 12 años)[27] — 17,50 € — 60 min
+  SVC018  — Сушка феном (Secado a mano)[28] — 12 € — 30 min
+  SVC019  — Сушка средней длины (Secado melena)[29] — 11 € — 30 min
+  SVC020  — Сушка коротких волос (Secado pelo corto)[30] — 17 € — 40 min
+  SVC021  — Сушка c плойкой для средней длины[31] — 15 € — 40 min
+  SVC022  — Сушка длинных волос (Secado largo)[32] — 20 € — 45 min
+  SVC023  — Выпрямление утюжком (Planchado) – базовое[33] — 20 € — 30 min
+  SVC024  — Завивка/волны утюжком (Secado con ondas)[34] — 14 € — 40 min
+  SVC025  — Укладка утюжком (Planchado) – удлинённый вариант[35] — 16 € — 50 min
+  SVC026  — Косы «боксёра» (Trenza boxeadora)[36] — 30 € — 55 min
+  SVC027  — Косы с накладками (цветные)[37] — 20 € — 55 min
+  SVC028  — Комбо: стрижка + сушка (Combo: Corte y secado)[38] — Переменная — 15 min
+  SVC029  — Комбо: окрашивание, стрижка и сушка (Combo: color, corte y secado)[39] — Переменная — 75 min
+  SVC030  — Комбо: окрашивание, мелирование, стрижка и сушка[40] — Переменная — 3 min
+  SVC031  — Комбо: окрашивание и стрижка[41] — Переменная — 45 min
+  SVC032  — Мелирование для мужчин (Mechas chico)[42] — 25 € — 60 min
+  SVC033  — Мелирование (верхняя зона)[43] — 30 € — 60 min
+  SVC034  — Окрашивание (Color)[12] — 19 € — 75 min

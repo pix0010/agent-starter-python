@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import asyncio
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -28,16 +29,19 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.plugins.azure.tts import StyleConfig, ProsodyConfig
 
 # 🔽 добавили импорт наших тулзов
-from tools.weather import lookup_weather
 from tools.barber import (
     load_barber_db,
     get_services,
     get_price,
     get_open_hours,
+    resolve_date,
     list_staff,
     get_staff_day,
+    get_staff_week,
     suggest_slots,
+    remember_contact,
 )
+from tools.gcal import create_booking, cancel_booking, find_booking_by_phone, reschedule_booking
 
 logger = logging.getLogger("agent")
 
@@ -47,7 +51,6 @@ _SIMPLE_CONSOLE = os.getenv("AGENT_CONSOLE_SIMPLE", "").lower() in {"1", "true",
 if _SIMPLE_CONSOLE:
     logging.getLogger().setLevel(logging.WARNING)
     logging.getLogger("livekit").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
@@ -76,37 +79,89 @@ class Assistant(Agent):
         super().__init__(
             instructions=instructions,
             tools=[
-                lookup_weather,
                 get_services,
                 get_price,
                 get_open_hours,
+                resolve_date,
                 list_staff,
                 get_staff_day,
+                get_staff_week,
                 suggest_slots,
+                remember_contact,
+                create_booking,
+                cancel_booking,
+                find_booking_by_phone,
+                reschedule_booking,
             ],
         )
 
 
 def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load()
+    # Чуть агрессивнее VAD, чтобы быстрее завершать реплики
+    proc.userdata["vad"] = silero.VAD.load(
+        min_silence_duration=0.45,
+        prefix_padding_duration=0.4,
+    )
     proc.userdata["barber_db"] = load_barber_db("db/barber")  # ← добавили
 
 
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
 
+    # --- Языковые голоса (Azure TTS) ---
+    VOICE_BY_LANG = {
+        # Более естественные дефолтные голоса; можно переопределить в .env.local
+        "es": os.getenv("AZURE_TTS_VOICE_ES", "es-ES-AlvaroNeural"),
+        "ru": os.getenv("AZURE_TTS_VOICE_RU", "ru-RU-DmitryNeural"),
+        "en": os.getenv("AZURE_TTS_VOICE_EN", "en-US-JennyNeural"),
+    }
+
+    def _normalize_lang_tag(tag: str) -> str:
+        t = (tag or "").lower()
+        if t.startswith("es"):
+            return "es"
+        if t.startswith("ru"):
+            return "ru"
+        if t.startswith("en"):
+            return "en"
+        return "es"
+
+    def _read_spanish_greeting() -> str:
+        g = read_text("prompts/greeting.txt") or ""
+        if g:
+            parts = g.strip().splitlines()
+            buf = []
+            for line in parts:
+                if line.strip() == "":
+                    break
+                buf.append(line)
+            if buf:
+                return "\n".join(buf).strip()
+        return "¡Hola! Soy tu asistente virtual. ¿En qué puedo ayudarte?"
+
+    # --- Сессия с авто-детектом языка (RU/ES/EN) и стартовым испанским TTS ---
     session = AgentSession(
-        # ⚠️ Рекомендуемая привычка под тебя (RU/ES):
         stt=azure.STT(
             speech_key=os.getenv("AZURE_SPEECH_KEY"),
             speech_region=os.getenv("AZURE_SPEECH_REGION", "francecentral"),
-            language=["ru-RU"],  # добавь "es-ES" при двуязычии: ["es-ES","ru-RU"]
+            language=["es-ES", "ru-RU", "en-US"],
+            explicit_punctuation=True,
+            phrase_list=[
+                "Betrán",
+                "Betrán Estilistas",
+                "Puerto de Sagunto",
+                "Sagunto",
+                "Valencia",
+                "cita",
+                "corte",
+                "barba",
+            ],
         ),
         tts=azure.TTS(
             speech_key=os.getenv("AZURE_SPEECH_KEY"),
             speech_region=os.getenv("AZURE_SPEECH_REGION", "francecentral"),
-            voice="ru-RU-SvetlanaNeural",
-            language="ru-RU",
+            language="es-ES",
+            voice=VOICE_BY_LANG["es"],
         ),
         llm=openai.LLM.with_azure(
             azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
@@ -118,9 +173,19 @@ async def entrypoint(ctx: JobContext):
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
+        # Быстрее реакция и без ожидания TTS‑alignment
         preemptive_generation=True,
-        # → включаем выравнивание текстов по озвучке (для печатного вывода стабильнее)
-        use_tts_aligned_transcript=True,
+        use_tts_aligned_transcript=False,
+        # Прерывания и авто‑возврат после ложных
+        allow_interruptions=True,
+        min_interruption_duration=0.25,
+        false_interruption_timeout=1.0,
+        resume_false_interruption=True,
+        # Endpointing: шустрее закрываем реплики
+        min_endpointing_delay=0.35,
+        max_endpointing_delay=3.5,
+        # Иногда требуется до 4 шагов тулзов (дата→часы→цена→слоты)
+        max_tool_steps=4,
     )
 
     @session.on("agent_false_interruption")
@@ -197,8 +262,12 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"Transcript saved to {path}")
     ctx.add_shutdown_callback(_save_history)
 
+    # Базовые инструкции + агент (будем обновлять инструкции при смене языка)
+    base_instructions = _build_instructions()
+    assistant = Assistant(instructions=base_instructions)
+
     await session.start(
-        agent=Assistant(instructions=_build_instructions()),
+        agent=assistant,
         room=ctx.room,
         room_input_options=RoomInputOptions(
             # Если self-hosted — параметр noise_cancellation убери
@@ -208,30 +277,69 @@ async def entrypoint(ctx: JobContext):
         room_output_options=RoomOutputOptions(sync_transcription=False),
     )
 
-    # 1) Стиль речи (подбери один из: "customer-service", "assistant", "friendly", "cheerful")
+    # 1) Стиль речи
     session.tts.update_options(
         style=StyleConfig(
-            style="cheerful",  # 👈 обратите внимание: без дефиса чаще всего
-            # role можно не задавать, если не нужно: role="YoungAdultFemale" и т.п. зависят от голоса
-            # degree — «насколько выражен» стиль (если поддерживается конкретным voice)
-            degree=1.0,                # 0.01–2.0 (пример диапазона; см. поддерживаемость голосом)
+            style="chat",
+            degree=1.0,
         )
     )
 
-    # 2) Просодия: скорость/тон/громкость (SSML-совместимые значения)
+    # 2) Просодия: скорость/тон/громкость (SSML‑совместимые значения)
     session.tts.update_options(
         prosody=ProsodyConfig(
-            rate="fast",    # чуть быстрее (например, +5%..+10%), Prosody rate must be one of 'x-slow', 'slow', 'medium', 'fast', 'x-fast'
-            pitch="medium",   # Prosody pitch must be one of 'x-low', 'low', 'medium', 'high', 'x-high
-            volume="medium", # Prosody volume must be one of 'silent', 'x-soft', 'soft', 'medium', 'loud', 'x-loud'
+            rate="medium",
+            pitch="medium",
+            volume="medium",
         )
     )
 
-    # Произносим приветствие, если оно задано
-    greeting = read_text("prompts/greeting.txt")
-    if greeting:
-        # Специально используем say(), чтобы произнести ровно этот текст, без LLM-переиначивания
-        await session.say(greeting)  # Требует настроенный TTS плагин
+    # Автосмена языка после первой фразы пользователя — синхронный колбэк + async задача
+    lang_state = {"current": "es", "switched_once": False}
+
+    async def _apply_lang_switch(detected: str):
+        """Асинхронная часть переключения языка/голоса и обновления инструкций."""
+        # 1) TTS: язык и голос
+        session.tts.update_options(
+            language={"es": "es-ES", "ru": "ru-RU", "en": "en-US"}[detected],
+            voice=VOICE_BY_LANG.get(detected, VOICE_BY_LANG["es"]),
+        )
+        # 2) LLM: целевой язык ответа
+        lang_clause = {
+            "es": "Responde en español de forma natural y concisa.",
+            "ru": "Отвечай по-русски, кратко и естественно.",
+            "en": "Respond in natural, concise English.",
+        }[detected]
+        await assistant.update_instructions(f"{base_instructions}\n\n{lang_clause}")
+        # 3) Ненавязчивое подтверждение — только один раз
+        if not lang_state["switched_once"]:
+            ack = {
+                "es": "Perfecto, hablamos en español.",
+                "ru": "Хорошо, переключаюсь на русский.",
+                "en": "Great, switching to English.",
+            }[detected]
+        
+            await session.say(ack)
+            lang_state["switched_once"] = True
+        lang_state["current"] = detected
+
+    @session.on("user_input_transcribed")
+    def _on_lang_autoswitch(ev):
+        """Синхронный колбэк: проверяем язык и запускаем async‑задачу при необходимости."""
+        if not getattr(ev, "is_final", False):
+            return
+        detected_tag = getattr(ev, "language", None)
+        if not detected_tag:
+            return
+        detected = _normalize_lang_tag(detected_tag)
+        if detected == lang_state["current"]:
+            return
+        asyncio.create_task(_apply_lang_switch(detected))
+
+    # Одно приветствие на испанском (берём первый абзац из greeting.txt)
+    greeting_es = _read_spanish_greeting()
+    if greeting_es:
+        await session.say(greeting_es)
 
     await ctx.connect()
 

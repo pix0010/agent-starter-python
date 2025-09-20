@@ -1,10 +1,8 @@
-import ast
-import json
 import os
 
 import pytest
 from dotenv import load_dotenv
-from livekit.agents import AgentSession, llm, mock_tools
+from livekit.agents import AgentSession, llm
 from livekit.plugins import openai
 
 from agent import Assistant, _build_instructions
@@ -62,108 +60,7 @@ async def test_offers_assistance() -> None:
         result.expect.no_more_events()
 
 
-@pytest.mark.asyncio
-async def test_weather_tool() -> None:
-    """Unit test for the weather tool combined with an evaluation of the agent's ability to incorporate its results."""
-    async with (
-        _llm() as llm,
-        AgentSession(llm=llm) as session,
-    ):
-        await session.start(Assistant(_build_instructions()))
-
-        # Run an agent turn following the user's request for weather information
-        result = await session.run(user_input="What's the weather in Tokyo?")
-
-        call_event = result.expect.next_event()
-        call_event.is_function_call(name="lookup_weather")
-        call_payload = call_event.event().item
-        arguments = getattr(call_payload, "arguments", None)
-        call_args = json.loads(arguments) if isinstance(arguments, str) else arguments
-        assert call_args["location"].lower() == "tokyo"
-
-        output_event = result.expect.next_event()
-        output_event.is_function_call_output()
-        output_payload = output_event.event().item
-        payload_str = getattr(output_payload, "output", None)
-        payload = ast.literal_eval(payload_str) if isinstance(payload_str, str) else payload_str
-        assert payload.get("ok") is True
-        assert payload.get("current", {}).get("temperature") is not None
-
-        # Финальный ответ ассистента должен прозвучать
-        result.expect.next_event().is_message(role="assistant")
-
-        # Ensures there are no function calls or other unexpected events
-        result.expect.no_more_events()
-
-
-@pytest.mark.asyncio
-async def test_weather_unavailable() -> None:
-    """Evaluation of the agent's ability to handle tool errors."""
-    async with (
-        _llm() as llm,
-        AgentSession(llm=llm) as sess,
-    ):
-        await sess.start(Assistant(_build_instructions()))
-
-        # Simulate a tool error
-        with mock_tools(
-            Assistant,
-            {"lookup_weather": lambda: RuntimeError("Weather service is unavailable")},
-        ):
-            result = await sess.run(user_input="What's the weather in Tokyo?")
-            result.expect.skip_next_event_if(type="message", role="assistant")
-            result.expect.next_event().is_function_call(
-                name="lookup_weather", arguments={"location": "Tokyo"}
-            )
-            result.expect.next_event().is_function_call_output()
-            await result.expect.next_event(type="message").judge(
-                llm,
-                intent="""
-                Acknowledges that the weather request could not be fulfilled and communicates this to the user.
-
-                The response should convey that there was a problem getting the weather information, but can be expressed in various ways such as:
-                - Mentioning an error, service issue, or that it couldn't be retrieved
-                - Suggesting alternatives or asking what else they can help with
-                - Being apologetic or explaining the situation
-
-                The response does not need to use specific technical terms like "weather service error" or "temporary".
-                """,
-            )
-
-            # leaving this commented, some LLMs may occasionally try to retry.
-            # result.expect.no_more_events()
-
-
-@pytest.mark.asyncio
-async def test_unsupported_location() -> None:
-    """Evaluation of the agent's ability to handle a weather response with an unsupported location."""
-    async with (
-        _llm() as llm,
-        AgentSession(llm=llm) as sess,
-    ):
-        await sess.start(Assistant(_build_instructions()))
-
-        with mock_tools(Assistant, {"lookup_weather": lambda: "UNSUPPORTED_LOCATION"}):
-            result = await sess.run(user_input="What's the weather in Tokyo?")
-
-            # Evaluate the agent's response for an unsupported location
-            await result.expect.next_event(type="message").judge(
-                llm,
-                intent="""
-                Communicates that the weather request for the specific location could not be fulfilled.
-
-                The response should indicate that weather information is not available for the requested location, but can be expressed in various ways such as:
-                - Saying they can't get weather for that location
-                - Explaining the location isn't supported or available
-                - Suggesting alternatives or asking what else they can help with
-                - Being apologetic about the limitation
-
-                The response does not need to explicitly state "unsupported" or discourage retrying.
-                """,
-            )
-
-        # Ensures there are no function calls or other unexpected events
-        result.expect.no_more_events()
+# Weather-related tests removed.
 
 
 @pytest.mark.asyncio

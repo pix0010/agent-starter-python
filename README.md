@@ -2,149 +2,84 @@
   <img src="./.github/assets/livekit-mark.png" alt="LiveKit logo" width="100" height="100">
 </a>
 
-# Стартовый проект LiveKit Agents — Python
+# LiveKit Agents — Betrán Estilistas (Python)
 
-Репозиторий развивает базовый шаблон LiveKit Agents и превращает его в голосового ассистента салона красоты **Betrán Estilistas** (Puerto de Sagunto, Испания). Агент отвечает на русском (переключается на испанский по запросу), озвучивает ответы голосом Azure, использует инструменты для работы с услугами, расписанием и подбором мастеров и может рассказать о погоде перед визитом. Проект остаётся удобной отправной точкой для экспериментов с LiveKit и постепенным наращиванием функциональности.
+Ассистент салона красоты Betrán Estilistas. Поддерживает RU/ES/EN, Azure Speech (STT/TTS), Azure OpenAI (GPT‑4o), управление диалогом, подбор мастера и бронирование через Google Calendar. Каталог услуг, длительности и профили мастеров хранятся в текстовых файлах `db/barber/*.txt` и используются напрямую.
 
 ## Что внутри
-- Голосовой агент на базе `livekit-agents` с предзагрузкой Silero VAD и мультиязычного turn detector'а
-- Интеграция с Azure Speech (STT/TTS) и Azure OpenAI (GPT‑4o) с настройкой стиля и просодии в `src/agent.py`
-- Текстовая база знаний Betrán Estilistas (`db/barber/*.txt`) и набор LLM‑тулзов для услуг, расписания, профилей мастеров и статуса салона
-- Тулза погоды на Open‑Meteo с обработкой ошибок
-- Метрики LiveKit, логирование, автоматическое сохранение транскриптов
-- Набор eval‑тестов на `pytest`, показывающий как проверять дружелюбие, работу тулзов и отказы
-- Dockerfile и Taskfile для быстрой разработки и деплоя
+- LiveKit Agents воркер с Silero VAD и мультиязычным turn‑detector’ом
+- Azure Speech STT/TTS (ru‑RU, es‑ES, en‑US; голос en‑US‑JennyMultilingualNeural) и Azure OpenAI (GPT‑4o)
+- Тулзы: услуги/цены/длительности, расписание/слоты, мастера, бронирование GCal (create/cancel/find/reschedule)
+- Логи, метрики, eval‑тесты, скрипты для демо‑занятости и отладки
 
-## Подготовка окружения
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) для управления зависимостями
-- Аккаунт LiveKit (Cloud или self-hosted)
-- Ключи Azure Speech и Azure OpenAI (можно заменить на другие поставщики при необходимости)
-- Опционально: ключи Deepgram и Cartesia, если будете возвращаться к оригинальным настройкам шаблона
+## Быстрый старт
+- Требования: Python 3.11+, [uv](https://docs.astral.sh/uv/), учётки LiveKit/Azure/Google Cloud
+- Установка:
+  - `uv sync`
+  - `cp .env.example .env.local` и заполнить переменные (см. ниже)
 
-```bash
-uv sync
-cp .env.example .env.local  # не забывайте заменить примеры ключей на свои реальные значения
+Переменные окружения (минимум):
+- LiveKit: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
+- Azure Speech: `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`
+- Azure OpenAI: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `OPENAI_API_VERSION`
+- Google Calendar:
+  - `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/service_account.json` (или `GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'`)
+  - `GCAL_CALENDAR_MAP='{"ruben":"<cal_id>","sara":"<cal_id>","alex":"<cal_id>","betran":"<cal_id>","pau":"<cal_id>"}'`
+  - (опц.) `GCAL_DEFAULT_CALENDAR_ID=<cal_id>` — fallback‑календарь (не рекомендуем в проде)
+
+Запуск:
+- Первый запуск (предзагрузка моделей): `uv run python src/agent.py download-files`
+- Режимы: `uv run python -m src.agent console | dev | start`
+- Чистый чат: `AGENT_CONSOLE_SIMPLE=1 uv run python -m src.agent console`
+
+## Структура
+```
+src/agent.py                вход агента; STT/TTS/LLM, ассистент и события
+src/tools/barber.py         услуги/цены/слоты; мастера и смены; контакты; индексация поиском RU/ES
+src/tools/gcal.py           бронирование Google Calendar: create/cancel/find/reschedule
+src/utils.py                утилиты (чтение текстов)
+prompts/system.txt          системный промпт (RU/ES/EN, правила флоу и тулзов)
+prompts/greeting.txt        приветствия на RU/ES/EN
+db/barber/*.txt             база знаний: услуги, мастера, факты, плейбук
+scripts/*.py                импорты/демо/рендер/QA (см. scripts/README.md)
 ```
 
-## Переменные окружения
-Основные переменные настраиваются в `.env.local` (автоматически подхватываются через `python-dotenv`):
+## Интеграция с Google Calendar
+1) Создайте сервисный аккаунт, скачайте JSON ключ; в каждом календаре мастера дайте права “Make changes to events” (Share → Add people → email сервис‑аккаунта).
+2) Заполните `GCAL_CALENDAR_MAP` (staff_id → Calendar ID из Settings → Integrate calendar).
+3) Инструменты агента:
+- `create_booking(name, phone, start_iso, service_id?, staff_id?, duration_min?)`
+- `cancel_booking(booking_id, staff_id)`
+- `find_booking_by_phone(phone, staff_id, days?)`
+- `reschedule_booking(booking_id, staff_id, new_start_iso, service_id?, duration_min?)`
+- `suggest_slots(service_id?, start_iso?, party?, staff_id?)` — учитывает длительность (блоки по 30 мин) и занятость GCal при staff_id
 
-- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — подключение к LiveKit
-- `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` — распознавание и синтез речи
-- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `OPENAI_API_VERSION` — LLM через Azure OpenAI (по умолчанию GPT-4o)
-- При необходимости добавьте ключи других провайдеров (`OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`) и скорректируйте код
+Демо‑занятость: `PYTHONPATH=src python scripts/seed_gcal_week.py`
 
-Для разработки удобно загрузить окружение через LiveKit CLI:
+## Данные (источник правды)
+- Вся актуальная информация об услугах, ценах, длительностях, мастерах и принципах диалога хранится в `db/barber/*.txt`:
+  - `bertran_services_catalog.txt` — названия услуг, ориентировочные цены и длительности (мин)
+  - `bertran_master_profiles.txt` — мастера и краткие описания/навыки
+  - `bertran_kb_facts.txt` — факты: адрес, часы работы, контакты
+  - `bertran_conversation_playbook.txt` — мини‑шаблоны и принципы коротких ответов
+  - `betran_estilistas_plain.txt` — расширенная история/контент
+  Эти файлы редактируются вручную и подхватываются агентом при запуске.
 
-```bash
-lk app env -w .env.local
-```
+## Скрипты
+- `scripts/seed_gcal_realistic.py` — реалистичное наполнение календарей на N дней (первые дни плотнее, дальше реже). Флаги: `--days`, `--heavy-days`, `--reset` (очистить демо перед посевом).
+- `scripts/cleanup_gcal_demo.py` — очистка демо‑событий в Google Calendar; флаг `--also-realistic` убирает ранние «кодовые» записи.
+- `scripts/run_scenarios_v2.py` — 15 линейных сценариев (RU/ES/EN), замеряет `turn_sec` по шагам и записывает логи.
+- `scripts/run_adaptive_scenarios.py` — адаптивные сценарии: парсит TOOL_RESULT, сам выбирает слоты, задаёт нестандартные вопросы, иногда меняет намерение; записывает логи и метрики (в т.ч. приблизительную латентность инструментов на шаге).
+- `scripts/run_demo_booking.py` — короткий демонстрационный флоу: выбрать время → создать запись (и при необходимости отменить).
+- `scripts/render_transcript.py` — конвертирует `logs/transcript_*.json` в HTML.
+- (Опц.) `scripts/seed_gcal_week.py` — упрощённый посев «Busy» на неделю (для быстрых демо).
 
-## Запуск агента
-Перед первым запуском скачайте модели VAD и определения очереди:
-
-```bash
-uv run python src/agent.py download-files
-```
-
-Дальше доступны несколько режимов:
-
-```bash
-uv run python -m src.agent console   # общение с агентом прямо из терминала
-uv run python -m src.agent dev       # режим для подключения фронтенда/телефонии в разработке
-uv run python -m src.agent start     # production-режим рабочего процесса
-```
-
-Хотите «чистый» текстовый чат без сервисных логов? Запускайте консольный режим так:
-
-```bash
-AGENT_CONSOLE_SIMPLE=1 uv run python -m src.agent console
-```
-
-В этом режиме выводятся только реплики вида `USER:` / `ASSISTANT:` без промежуточных логов и метрик.
-
-В проекте есть `taskfile.yaml`, поэтому эквивалентные команды можно запускать через `task install` и `task dev`.
-
-## Структура проекта
-```
-agent-starter-python/
-├─ src/
-│  ├─ agent.py              # точка входа LiveKit Worker: конфигурация STT/TTS/LLM, запуск Assistant
-│  ├─ utils.py              # утилиты (чтение текстовых файлов с подсказками)
-│  └─ tools/                # тулзы, доступные агенту
-│     ├─ barber.py          # работа с локальной БД услуг, сотрудников и расписания
-│     └─ weather.py         # получение погоды через Open-Meteo
-├─ prompts/
-│  ├─ system.txt            # актуальные системные инструкции Betrán Estilistas
-│  └─ greeting.txt          # приветствие и стартовый спич (подхватывается TTS)
-├─ db/barber/               # текстовая база знаний салона (каталог услуг, профили, факты, плейбук)
-├─ tests/                   # примеры эвевалов и моков для pytest
-├─ Dockerfile               # готовый образ на базе ghcr.io/astral-sh/uv
-├─ taskfile.yaml            # удобные команды для разработки
-├─ pyproject.toml / uv.lock # управление зависимостями и настройками проекта
-└─ .env.example             # образец переменных окружения (замените значениями для боевой среды)
-```
-
-## Интеграции и тулзы
-- **Azure Speech STT/TTS** — основной канал распознавания/озвучивания (по умолчанию `ru-RU`; добавьте `es-ES`, если нужно двуязычие). Стиль (`StyleConfig`) и просодию (`ProsodyConfig`) можно настроить в `src/agent.py`.
-- **Azure OpenAI GPT-4o** — основной LLM с пониженной температурой (0.3) для предсказуемости.
-- **LiveKit Turn Detector + Silero VAD** — управление очередью реплик, VAD предзагружается в `prewarm`.
-- **LiveKit Noise Cancellation** — улучшает качество аудио в облаке (если on-premise, можно отключить).
-- **Barber tools** (`src/tools/barber.py`):
-  - `get_services` — возвращает услуги с категориями, длительностью, ценой (или пометкой «variable») и тегами.
-  - `get_price` — ищет услугу по коду или названию, возвращает детализированную карточку и связанные теги.
-  - `get_open_hours` — отдаёт общий график или статус конкретного дня с учётом закрытых дней/праздников.
-  - `list_staff` — перечисляет мастеров, их специализации и услуги, которые они поддерживают (фильтрация по конкретной услуге).
-  - `get_staff_day` — проверяет смены мастера на дату, учитывает выходные салона, отпуска и праздники.
-  - `suggest_slots` — предлагает ближайшие доступные 30-минутные слоты на основе расписания.
-- **Weather tool** (`lookup_weather`) — запрашивает погоду через Open-Meteo (включая геокодинг) при явном запросе пользователя.
-
-## Архитектура базы знаний
-- Все данные салона хранятся в `db/barber/*.txt`. Ключевые файлы:
-  - `bertran_services_catalog.txt` — список услуг (код, описание, цена, длительность, категория).
-  - `bertran_master_profiles.txt` — профили мастеров и рекомендации.
-  - `bertran_kb_facts.txt` — факты: контакты, часы работы, философия, комьюнити.
-  - `betran_estilistas_plain.txt` — расширенная история и стилистические подсказки.
-  - `bertran_conversation_playbook.txt` — мини-шаблоны ответов и принципы диалога.
-- При `prewarm` `load_barber_db` парсит эти файлы, строит индексы/теги услуг, наследует график салона для расписания мастеров и делает базу доступной тулзам.
-- Системный промпт (`prompts/system.txt`) описывает тон и правила ассистента, приветствие лежит в `prompts/greeting.txt`.
-
-## Текущее состояние
-- Вся бизнес-логика подтягивается из текстовой базы Betrán Estilistas (услуги, расписание, профили мастеров). Ассистент говорит «как стилист» и по умолчанию предлагает ближайшие слоты через тул `suggest_slots`.
-- Для полноценной работы требуются ключи Azure Speech и Azure OpenAI (STT/TTS + LLM). Без них запуск или стресс-тесты не отработают.
-- Есть скрипт `scripts/run_stress_dialogs.py`, который прогоняет 15 стресс-сценариев и сохраняет логи в `logs/stress_tests/`. Запуск: `PYTHONPATH=. AGENT_CONSOLE_SIMPLE=1 .venv/bin/python scripts/run_stress_dialogs.py`.
-- По результатам последние прогонов (2025‑09‑19):
-  - Иногда LLM «проглатывает» второе сообщение подряд (`parent_child_combo`, `walkin_group`). Надо усилить промпт или обработку событий, чтобы отвечать на каждое сообщение.
-  - Обращения к `get_staff_day` идут с числовыми ID ⇒ тул возвращает `staff_not_found`. Нужен явный маппинг имён в `staff_id` или дополнительная инструкция в промпте.
-  - Ассистент заявляет, что салон не принимает волосы на донорство, хотя в базе знаний сказано обратное — требует синхронизации данных.
-  - При длинных сериях запросов возможны ответы Azure 429 (превышен токеновый лимит). Скрипт делает паузы, но при необходимости повторите запуск позже.
-- Тесты `uv run pytest` могут падать в macOS sandbox из‑за `system-configuration`; на локальной машине без ограничений проходят штатно.
-
-## Тестирование и контроль качества
-Проект содержит примеры эвевалов на `pytest`, которые проверяют дружелюбие ассистента, корректность работы тулзов и умение отказывать на некорректные запросы.
-
-```bash
-uv run pytest
-```
-
-Добавляйте собственные сценарии, чтобы фиксировать бизнес-логику и регрессии по мере роста проекта.
+## Уборка и актуальность
+- Удалены устаревшие файлы: `db/barber/services.json`, `db/barber/staff.json`, `db/barber/store.json`, `db/barber/promt.txt`, `db/barber/greetings.txt`, `.DS_Store`, а также `info.docx` (больше не нужен).
+- Источник правды — текстовые файлы в `db/barber/`.
 
 ## Контейнеризация
-`Dockerfile` собирает production-образ на базе официального образа uv:
-
-1. Устанавливает системные зависимости, синхронизирует зависимости через `uv sync --locked`
-2. Копирует проект, запускает `download-files` для предзагрузки моделей
-3. Запускает воркер командой `uv run src/agent.py start`
-
-Для деплоя в LiveKit Cloud или своё окружение следуйте [официальному гайду](https://docs.livekit.io/agents/ops/deployment/).
-
-## Дальнейшая кастомизация
-- Меняйте промпты в `prompts/` (тон, приветствие, динамические инструкции).
-- Обновляйте TXT-файлы в `db/barber/` при изменении услуг, расписания или плейбука. Парсер подхватит изменения при следующем запуске воркера.
-- При необходимости добавляйте новые тулзы в `src/tools/` и регистрируйте их в `Assistant(..., tools=[...])`.
-- Экспериментируйте с языковыми настройками STT/TTS, стилем и просодией в `src/agent.py`.
-- Подключайте свои фронтенды (React, Flutter, iOS и т.д.) или телефонию через LiveKit — см. [официальную документацию](https://docs.livekit.io/agents/ops/deployment/).
+- Dockerfile использует uv, предзагружает модели (`download-files`) и запускает воркер (`uv run src/agent.py start`).
 
 ## Лицензия
-Проект распространяется по лицензии MIT — см. файл `LICENSE`.
+MIT — см. `LICENSE`.

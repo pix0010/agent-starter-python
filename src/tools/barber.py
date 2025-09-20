@@ -91,7 +91,8 @@ def _normalize(text: str) -> str:
     norm = unicodedata.normalize("NFKD", text or "")
     norm = "".join(ch for ch in norm if not unicodedata.combining(ch))
     norm = norm.lower()
-    norm = re.sub(r"[^a-z0-9]+", " ", norm)
+    # keep latin and cyrillic letters + digits
+    norm = re.sub(r"[^0-9a-zA-Zа-яА-ЯёЁ]+", " ", norm)
     return norm.strip()
 
 
@@ -347,10 +348,17 @@ def _infer_specialties(text: str) -> List[str]:
 
 def _parse_master_profiles(text: str, store_hours: Dict[str, List[str]], store_closed: Sequence[str]) -> List[StaffMember]:
     staff: List[StaffMember] = []
+    in_tips = False
     default_days_off = list(store_closed)
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("Профили") or line.startswith("Совет"):
+        if not line or line.startswith("Профили"):
+            continue
+        if line.startswith("Совет"):
+            in_tips = True
+            continue
+        if in_tips:
+            # всё, что идёт после раздела «Совет логики подбора», не является профилями
             continue
         if not line.startswith("—"):
             continue
@@ -392,6 +400,12 @@ def _index_services(services: Iterable[Service]) -> tuple[Dict[str, Service], Di
         by_id.setdefault(svc.code, svc)
         add_keyword(svc.code, svc.code)
         add_keyword(svc.name, svc.code)
+        # also index base name without parentheses/brackets and extra spaces
+        base_name = re.sub(r"\s*\[[^\]]*\]\s*", " ", svc.name)
+        base_name = re.sub(r"\s*\([^\)]*\)\s*", " ", base_name)
+        base_name = re.sub(r"\s+", " ", base_name).strip()
+        if base_name and base_name.lower() != svc.name.lower():
+            add_keyword(base_name, svc.code)
         for part in re.split(r"[+/,&]", svc.name):
             add_keyword(part, svc.code)
     return by_id, keywords
@@ -556,16 +570,134 @@ def _is_holiday(store: StoreInfo, date_iso: str) -> bool:
 def _match_service(db: BarberDB, query: str) -> Optional[Service]:
     if not query:
         return None
-    key = query.strip().lower()
+    key = (query or "").strip().lower()
+
+    # Heuristics for common haircut synonyms without modifiers.
+    # Prefer basic men's haircut for bare "стрижка"/"corte"/"haircut" unless other cues are present.
+    generic_tokens = {"стрижка", "corte", "haircut", "подстричь", "подстричься"}
+    beard_signals = any(tok in key for tok in ["бород", "barba", "beard"])
+    female_signals = any(tok in key for tok in ["жен", "дев", "chica", "girl", "woman", "mujer"])
+    kids_signals = any(tok in key for tok in ["дет", "реб", "niñ", "kid", "peque"])
+
+    if any(tok in key for tok in generic_tokens):
+        # Cut + beard
+        if beard_signals:
+            cand = db.service_index.get("SVC002") or db.service_index.get("svc002")
+            if cand:
+                return cand
+        # Women's cut
+        if female_signals:
+            cand = db.service_index.get("SVC016") or db.service_index.get("svc016")
+            if cand:
+                return cand
+        # Kids
+        if kids_signals:
+            cand = db.service_index.get("SVC003") or db.service_index.get("svc003")
+            if cand:
+                return cand
+        # Default to men's
+        cand = db.service_index.get("SVC001") or db.service_index.get("svc001")
+        if cand:
+            return cand
+
+    # Direct id or full name
     svc = db.service_index.get(key)
     if svc:
         return svc
+
+    # Keyword index
     normalized = _normalize(query)
     for code in db.service_keywords.get(normalized, []):
         found = db.service_index.get(code.lower())
         if found:
             return found
+
+    # Try without brackets/parentheses
+    q2 = re.sub(r"\s*\[[^\]]*\]\s*", " ", query)
+    q2 = re.sub(r"\s*\([^\)]*\)\s*", " ", q2)
+    normalized2 = _normalize(q2)
+    for code in db.service_keywords.get(normalized2, []):
+        found = db.service_index.get(code.lower())
+        if found:
+            return found
     return None
+
+
+@function_tool(
+    name="resolve_date",
+    description=(
+        "Parse a natural-language date in RU/ES/EN into a concrete date in salon timezone. "
+        "Args: query (str), prefer_morning (bool=false) to bias start-of-day."
+    ),
+)
+async def resolve_date(context: RunContext, query: str, prefer_morning: bool = False) -> Dict[str, Any]:
+    """Return a target date (YYYY-MM-DD) and weekday based on user's phrase.
+
+    Examples: "в понедельник", "el miércoles", "next Friday". Uses Europe/Madrid timezone.
+    """
+    db = _get_db()
+    tz = ZoneInfo(db.store.timezone or "Europe/Madrid")
+    now = datetime.now(tz)
+    text = (query or "").strip()
+    try:
+        import dateparser  # type: ignore
+    except Exception:
+        # Fallback: simple keywords map to next weekday
+        weekdays = {
+            "понедель": 0,
+            "вторник": 1,
+            "сред": 2,
+            "четверг": 3,
+            "пятниц": 4,
+            "суббот": 5,
+            "воскрес": 6,
+            "lunes": 0,
+            "martes": 1,
+            "miércoles": 2,
+            "miercoles": 2,
+            "jueves": 3,
+            "viernes": 4,
+            "sábado": 5,
+            "sabado": 5,
+            "domingo": 6,
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        w = None
+        low = text.lower()
+        for k, idx in weekdays.items():
+            if k in low:
+                w = idx
+                break
+        if w is None:
+            target = now
+        else:
+            days_ahead = (w - now.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            target = now + timedelta(days=days_ahead)
+    else:
+        settings = {
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": now,
+            "TIMEZONE": db.store.timezone or "Europe/Madrid",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+        }
+        dt = dateparser.parse(text, settings=settings, languages=["ru", "es", "en"])  # type: ignore
+        if not dt:
+            return {"ok": False, "error": "could_not_parse"}
+        target = dt.astimezone(tz)
+
+    date_str = target.date().isoformat()
+    weekday = WDAYS_MAP[target.weekday()]
+    hour = 9 if prefer_morning else 8
+    start_iso = datetime(target.year, target.month, target.day, hour, 0, tzinfo=tz).isoformat(timespec="minutes")
+    return {"ok": True, "date": date_str, "weekday": weekday, "start_iso": start_iso}
 
 # ---------- Тулзы ----------
 
@@ -659,9 +791,14 @@ async def get_open_hours(context: RunContext, date_iso: Optional[str] = None) ->
 
 @function_tool(
     name="list_staff",
-    description="List staff and skills. Optionally filter by service_id.",
+    description=(
+        "List staff and skills. Optionally filter by service_id. "
+        "Set bookable_only=true to include only staff present in GCAL_CALENDAR_MAP."
+    ),
 )
-async def list_staff(context: RunContext, service_id: Optional[str] = None) -> Dict[str, Any]:
+async def list_staff(
+    context: RunContext, service_id: Optional[str] = None, bookable_only: bool = False
+) -> Dict[str, Any]:
     db = _get_db()
     tags_filter: List[str] = []
     if service_id:
@@ -669,8 +806,22 @@ async def list_staff(context: RunContext, service_id: Optional[str] = None) -> D
         if svc:
             tags_filter = db.service_tags.get(svc.code.lower(), [])
 
+    bookable_ids: Optional[set[str]] = None
+    if bookable_only:
+        import os, json as _json
+        mp_raw = os.getenv("GCAL_CALENDAR_MAP", "").strip()
+        ids: set[str] = set()
+        if mp_raw:
+            try:
+                ids = set((set((_json.loads(mp_raw) or {}).keys())))
+            except Exception:
+                ids = set()
+        bookable_ids = ids if ids else None
+
     out = []
     for member in db.staff:
+        if bookable_ids is not None and member.id not in bookable_ids:
+            continue
         if tags_filter:
             member_tags = set(member.specialties)
             if "generalist" not in member_tags and not member_tags.intersection(tags_filter):
@@ -745,13 +896,93 @@ async def get_staff_day(context: RunContext, staff_id: str, date_iso: str) -> Di
 
 
 @function_tool(
-    name="suggest_slots",
+    name="get_staff_week",
     description=(
-        "Suggest upcoming 30-minute appointment slots based on store hours. "
-        "Args: count (int, default 3), start_iso (optional ISO datetime)."
+        "Get staff working status for a range of days. "
+        "Args: staff_id (str), start_iso (optional ISO datetime), days (int, default 7)."
     ),
 )
-async def suggest_slots(context: RunContext, count: int = 3, start_iso: Optional[str] = None) -> Dict[str, Any]:
+async def get_staff_week(
+    context: RunContext, staff_id: str, start_iso: Optional[str] = None, days: int = 7
+) -> Dict[str, Any]:
+    db = _get_db()
+    staff = next((s for s in db.staff if s.id == staff_id), None)
+    if not staff:
+        return {"ok": False, "error": "staff_not_found"}
+
+    store = db.store
+    tz = ZoneInfo(store.timezone or "Europe/Madrid")
+
+    if start_iso:
+        try:
+            base_dt = datetime.fromisoformat(start_iso)
+            if base_dt.tzinfo is None:
+                base_dt = base_dt.replace(tzinfo=tz)
+            else:
+                base_dt = base_dt.astimezone(tz)
+        except Exception:
+            return {"ok": False, "error": "bad_start_iso"}
+    else:
+        base_dt = datetime.now(tz)
+
+    days = max(1, min(int(days or 7), 14))
+
+    items: List[Dict[str, Any]] = []
+    for offset in range(days):
+        dt = base_dt + timedelta(days=offset)
+        weekday = WDAYS_MAP[dt.weekday()]
+        weekly_off = set(staff.weekly_days_off)
+        date_iso = dt.isoformat(timespec="minutes")
+        date_key = date_iso[:10]
+        time_off_dates = set(staff.time_off_dates)
+        holiday = _is_holiday(store, date_iso)
+        store_closed = weekday in store.closed_days
+
+        shifts_by_wday = staff.schedule.get(weekday, [])
+        working = bool(shifts_by_wday) and not (store_closed or holiday or weekday in weekly_off or date_key in time_off_dates)
+        reason: Optional[str] = None
+        if not working:
+            if store_closed:
+                reason = "store_closed"
+            elif holiday:
+                reason = "holiday"
+            elif weekday in weekly_off:
+                reason = "weekly_day_off"
+            elif date_key in time_off_dates:
+                reason = "time_off"
+
+        items.append(
+            {
+                "date": dt.date().isoformat(),
+                "weekday": weekday,
+                "working": working,
+                "shifts": shifts_by_wday if working else [],
+                "day_off_reason": reason,
+                "holiday": holiday,
+                "store_closed": store_closed,
+            }
+        )
+
+    return {"ok": True, "staff_id": staff_id, "start": base_dt.isoformat(timespec="minutes"), "days": items}
+
+
+@function_tool(
+    name="suggest_slots",
+    description=(
+        "Suggest appointment slots based on store hours and Google Calendar occupancy. "
+        "Args: count (int, default 3), start_iso (optional ISO datetime), service_id (optional), services (optional list of service ids/names), party (int, default 1), staff_id (optional). "
+        "If a single service_id or a list of services is provided, allocates contiguous 30-min blocks covering total duration. For party>1, returns sequential group slots."
+    ),
+)
+async def suggest_slots(
+    context: RunContext,
+    count: int = 3,
+    start_iso: Optional[str] = None,
+    service_id: Optional[str] = None,
+    services: Optional[List[str]] = None,
+    party: int = 1,
+    staff_id: Optional[str] = None,
+) -> Dict[str, Any]:
     db = _get_db()
     store = db.store
     tz = ZoneInfo(store.timezone or "Europe/Madrid")
@@ -770,11 +1001,166 @@ async def suggest_slots(context: RunContext, count: int = 3, start_iso: Optional
 
     if count <= 0:
         count = 3
+    party = max(1, min(int(party or 1), 4))
 
-    slots = _generate_slots(store, base_dt, count=count)
+    # Determine required block count based on service(s) total duration
+    block_count = 1
+    svc = None
+    services_list: List[Service] = []
+    total_minutes = 0
+    if services:
+        for q in services:
+            m = _match_service(db, q)
+            if m and (m.duration_min or 0) > 0:
+                services_list.append(m)
+                total_minutes += int(m.duration_min or 0)
+        if not services_list and service_id:
+            svc = _match_service(db, service_id)
+    else:
+        if service_id:
+            svc = _match_service(db, service_id)
+            if svc and (svc.duration_min or 0) > 0:
+                total_minutes = int(svc.duration_min or 0)
+    if total_minutes > 0:
+        dur = max(30, total_minutes)
+        block_count = max(1, (dur + 29) // 30)
+
+    # If staff filter provided, we'll skip days when staff is off
+    staff = None
+    if staff_id:
+        staff = next((s for s in db.staff if s.id == staff_id), None)
+
+    # Generate raw 30-min slots beyond requested count to allow grouping
+    raw = _generate_slots(store, base_dt, count=max(count * max(block_count, party) * 3, count))
+
+    # Filter raw by staff availability (simple: skip dates when staff not working)
+    if staff is not None:
+        filtered = []
+        for s in raw:
+            date_iso = s["iso"]
+            weekday = s.get("weekday")
+            if weekday in staff.weekly_days_off:
+                continue
+            # holiday/store closed already covered by generation, but keep consistent with staff time_off
+            date_key = date_iso[:10]
+            if date_key in set(staff.time_off_dates):
+                continue
+            filtered.append(s)
+        raw = filtered
+
+    # Group into blocks for service duration
+    def contiguous(a, b):
+        return a["end_time"] == b["time"] and a["date"] == b["date"]
+
+    grouped: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(raw):
+        start = raw[i]
+        ok = True
+        # ensure block_count contiguous slots
+        block = [start]
+        j = i
+        for k in range(1, block_count):
+            if j + 1 >= len(raw) or not contiguous(raw[j], raw[j + 1]):
+                ok = False
+                break
+            block.append(raw[j + 1])
+            j += 1
+
+        if ok:
+            if party == 1:
+                end_slot = block[-1]
+                grouped.append(
+                    {
+                        "iso": start["iso"],
+                        "date": start["date"],
+                        "time": start["time"],
+                        "end_time": end_slot["end_time"],
+                        "weekday": start["weekday"],
+                        "weekday_ru": start.get("weekday_ru"),
+                        "label": start["label"],
+                        "blocks": block_count,
+                        "service_id": (svc.code if svc else None),
+                        "services": [s.code for s in services_list] if services_list else ([(svc.code)] if svc else []),
+                    }
+                )
+            else:
+                # For party>1 provide sequential group times (party contiguous slots)
+                grp_ok = True
+                grp = [start]
+                jj = j
+                for p in range(1, party):
+                    if jj + 1 >= len(raw) or not contiguous(raw[jj], raw[jj + 1]):
+                        grp_ok = False
+                        break
+                    grp.append(raw[jj + 1])
+                    jj += 1
+                if grp_ok:
+                    grouped.append(
+                        {
+                            "group": [
+                                {
+                                    "iso": x["iso"],
+                                    "time": x["time"],
+                                    "end_time": x["end_time"],
+                                }
+                                for x in grp
+                            ],
+                            "date": start["date"],
+                            "weekday": start["weekday"],
+                            "weekday_ru": start.get("weekday_ru"),
+                            "label": start["label"],
+                            "party": party,
+                            "blocks": block_count,
+                            "service_id": (svc.code if svc else None),
+                            "services": [s.code for s in services_list] if services_list else ([(svc.code)] if svc else []),
+                        }
+                    )
+
+        i += 1 if block_count == 1 else block_count
+        if len(grouped) >= count:
+            break
+
+    # Optionally filter against Google Calendar busy intervals for a specific staff
+    if staff is not None and grouped:
+        try:
+            from .gcal import filter_slots_with_gcal  # lazy import to avoid hard dep
+            grouped = filter_slots_with_gcal(staff.id, grouped)
+        except Exception:
+            pass
+
     return {
-        "ok": bool(slots),
+        "ok": bool(grouped),
         "timezone": store.timezone,
         "start": base_dt.isoformat(timespec="minutes"),
-        "slots": slots,
+        "slots": grouped,
     }
+
+
+@function_tool(
+    name="remember_contact",
+    description=(
+        "Store user's contact for booking follow-up. "
+        "Args: name (str), phone (str). Returns ok and a reference id."
+    ),
+)
+async def remember_contact(context: RunContext, name: str, phone: str) -> Dict[str, Any]:
+    name = (name or "").strip()
+    phone = (phone or "").strip()
+    if not name or not phone:
+        return {"ok": False, "error": "missing_name_or_phone"}
+    # very lightweight storage into logs/contacts.csv
+    from pathlib import Path
+    import csv
+    import hashlib
+
+    Path("logs").mkdir(exist_ok=True)
+    path = Path("logs/contacts.csv")
+    ref = hashlib.sha1(f"{name}|{phone}".encode("utf-8")).hexdigest()[:10]
+    exists = path.exists()
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        if not exists:
+            writer.writerow(["ref", "name", "phone"])  # header
+        writer.writerow([ref, name, phone])
+    return {"ok": True, "ref": ref}
