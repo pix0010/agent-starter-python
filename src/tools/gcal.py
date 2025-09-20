@@ -348,31 +348,50 @@ def filter_slots_with_gcal(staff_id: str, slot_items: List[Dict[str, Any]]) -> L
             return slot_items
         first = slot_items[0]
         # Determine query window: from first slot start to last slot end
-        start_dt = _parse_iso(first["iso"]) if "iso" in first else None
+        if "iso" in first:
+            start_dt = _parse_iso(first["iso"])  # tz-aware start
+        elif first.get("group"):
+            start_dt = _parse_iso(first["group"][0]["iso"])  # tz-aware start for party
+        else:
+            start_dt = None
         end_dt = None
         for it in slot_items:
             # compute end per item
             if "iso" in it and it.get("end_time"):
-                dt = _parse_iso(it["iso"]).replace()
-                # end from date + end_time
-                end_candidate = datetime.fromisoformat(it["iso"])  # start with tz
-                # derive end by replacing hour/minute
+                s = _parse_iso(it["iso"])  # tz-aware start
                 hh, mm = map(int, (it["end_time"] or "00:00").split(":"))
-                end_candidate = end_candidate.replace(hour=hh, minute=mm)
+                end_candidate = s.replace(hour=hh, minute=mm)
+                end_dt = end_candidate if end_dt is None or end_candidate > end_dt else end_dt
+            elif it.get("group"):
+                g = it["group"]
+                s0 = _parse_iso(g[0]["iso"])  # tz-aware start of first
+                hh, mm = map(int, (g[-1].get("end_time") or "00:00").split(":"))
+                end_candidate = s0.replace(hour=hh, minute=mm)
                 end_dt = end_candidate if end_dt is None or end_candidate > end_dt else end_dt
         if start_dt is None or end_dt is None:
             return slot_items
         busy = _busy_intervals(cal_id, _to_iso(start_dt), _to_iso(end_dt))
 
         def is_free(item: Dict[str, Any]) -> bool:
-            if "iso" not in item:
+            # Single-slot
+            if "iso" in item:
+                s = _parse_iso(item["iso"])  # tz-aware start
+                hh, mm = map(int, (item.get("end_time") or "00:00").split(":"))
+                e = s.replace(hour=hh, minute=mm)
+                for b_start, b_end in busy:
+                    if _intersects(s, e, b_start, b_end):
+                        return False
                 return True
-            s = _parse_iso(item["iso"])
-            hh, mm = map(int, (item.get("end_time") or "00:00").split(":"))
-            e = s.replace(hour=hh, minute=mm)
-            for b_start, b_end in busy:
-                if _intersects(s, e, b_start, b_end):
-                    return False
+            # Grouped sequential slots (party>1)
+            if item.get("group"):
+                g = item["group"]
+                s0 = _parse_iso(g[0]["iso"])  # start
+                hh, mm = map(int, (g[-1].get("end_time") or "00:00").split(":"))
+                eN = s0.replace(hour=hh, minute=mm)
+                for b_start, b_end in busy:
+                    if _intersects(s0, eN, b_start, b_end):
+                        return False
+                return True
             return True
 
         return [x for x in slot_items if is_free(x)]
