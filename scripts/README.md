@@ -11,15 +11,19 @@ Scripts overview
 
 - run_scenarios_v2.py
   - Runs ~15 linear scripted scenarios (RU/ES/EN), exercising tools for slots/prices/booking/cancel/reschedule. Saves dialogs to `logs/stress_tests/*.txt` and per‑turn metrics to `*_metrics.json` (turn_sec + tool activity).
+  - Human pacing + retries are built‑in (per‑turn sleeps, backoff on Azure 429/content filter).
   - Run: `uv run python scripts/run_scenarios_v2.py`
 
 - run_adaptive_scenarios.py
   - Adaptive orchestrator: reads TOOL_RESULT (e.g., suggest_slots), automatically picks a slot, injects clarifications (price/care), occasionally changes intent (time/master/services). Writes dialogs and metrics (including approximate per‑tool latency per turn).
-  - Flags: `--sleep-between`, `--step-sleep`, `--skip-existing`, `--max-retries`, `--retry-sleep`.
+  - Human pacing by default; tune with flags: `--sleep-between`, `--step-sleep`, `--skip-existing`, `--max-retries`, `--retry-sleep` (backoff for Azure 429/content filter is built‑in).
   - Run: `uv run python scripts/run_adaptive_scenarios.py`
 
 - run_demo_booking.py
-  - Simple text‑mode demo: user asks to book, agent proposes slots, confirms a time, and creates a booking (optionally cancel afterwards).
+  - Simple text‑mode demo: user asks to book, agent proposes slots, confirms a time, and creates a booking (optionally cancel afterwards). Includes short sleeps to emulate human speed.
+
+- run_quick_checks.py (new)
+  - Two quick scenarios (book any master; find & cancel by phone). Saves logs to `logs/quick_checks/` with a short `.comment.txt` per run. Uses human‑like pacing and backoff on 429.
 
 - render_transcript.py
   - Converts `logs/transcript_*.json` to HTML for quick reading.

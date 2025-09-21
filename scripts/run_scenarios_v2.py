@@ -142,14 +142,26 @@ def _format_history(history: Dict) -> str:
     return "\n".join(lines)
 
 
-async def run_one(llm: openai.LLM, scenario: Dict, out_dir: Path) -> None:
+async def run_one(llm: openai.LLM, scenario: Dict, out_dir: Path, *, step_sleep: float = 1.5) -> None:
     async with AgentSession(llm=llm) as session:
         await session.start(Assistant(_build_instructions()))
         import time
         metrics: List[Dict] = []
         for msg in scenario["messages"]:
             t0 = time.monotonic()
-            res = await session.run(user_input=msg)
+            # human-like pacing + retry on 429/content filter
+            tries = 0
+            while True:
+                try:
+                    res = await session.run(user_input=msg)
+                    break
+                except Exception as e:
+                    emsg = str(e).lower()
+                    tries += 1
+                    if tries <= 4 and ("429" in emsg or "rate limit" in emsg or "content_filter" in emsg or "responsibleai" in emsg):
+                        await asyncio.sleep(6 * tries)
+                        continue
+                    raise
             t1 = time.monotonic()
             # extract tool activity from last turn
             items = session.history.to_dict().get("items", [])
@@ -177,6 +189,7 @@ async def run_one(llm: openai.LLM, scenario: Dict, out_dir: Path) -> None:
         txt = _format_history(history)
         (out_dir / f"{ts}_{scenario['id']}.txt").write_text(txt, encoding="utf-8")
         (out_dir / f"{ts}_{scenario['id']}_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        await asyncio.sleep(step_sleep)
 
 
 async def main() -> None:
@@ -186,9 +199,10 @@ async def main() -> None:
         for sc in SCENARIOS:
             print(f"Running: {sc['id']} — {sc['title']}")
             try:
-                await run_one(llm, sc, out_dir)
+                await run_one(llm, sc, out_dir, step_sleep=2.0)
             except Exception as e:
                 print(f"Scenario {sc['id']} failed: {e}")
+            await asyncio.sleep(3.0)
 
 
 if __name__ == "__main__":

@@ -58,20 +58,20 @@ Seeding and Cleanup
   `PYTHONPATH=src python3 scripts/cleanup_gcal_demo.py --days-back 60 --days-forward 60 --also-realistic`
 
 Tests and Logs
-- Linear scripted scenarios (~15):
+- Quick checks (2 scenarios, human‑paced):
+  `uv run python scripts/run_quick_checks.py`
+  - Output: `logs/quick_checks/*.txt` and `.json` + a `.comment.txt` per run.
+
+- Linear scripted scenarios (~15), human‑paced with backoff:
   `uv run python scripts/run_scenarios_v2.py`
-  - Outputs per scenario:
-    - Dialog: `logs/stress_tests/<ts>_<id>.txt` (includes TOOL_CALL/TOOL_RESULT)
-    - Metrics: `logs/stress_tests/<ts>_<id>_metrics.json` (per‑turn `turn_sec`, tool activity, approx per‑tool latency)
-- Adaptive scenarios (dynamic):
-  `uv run python scripts/run_adaptive_scenarios.py`
-  - Behavior: parses tool results, auto-picks slots, injects clarifications (price/care), sometimes changes intent (time/master/services).
-  - Flags:
-    - `--sleep-between` seconds between scenarios (avoid rate limits)
-    - `--step-sleep` seconds between turns
-    - `--skip-existing` skip scenarios with existing logs
-    - `--max-retries` + `--retry-sleep` backoff on Azure 429
-  - Outputs dialog + metrics in `logs/stress_tests/`.
+  - Per scenario outputs:
+    - Dialog: `logs/stress_tests/<ts>_<id>.txt`
+    - Metrics: `logs/stress_tests/<ts>_<id>_metrics.json`
+
+- Adaptive scenarios (dynamic), human‑paced:
+  `uv run python scripts/run_adaptive_scenarios.py --sleep-between 6 --step-sleep 1.5 --max-retries 6 --retry-sleep 15`
+  - Behavior: parses tool results, auto‑picks slots, injects clarifications; built‑in backoff (429/content filter).
+  - Output: dialog + metrics in `logs/stress_tests/`.
 
 Reading Outputs
 - Live tail: `tail -f logs/adaptive_run.out`
@@ -81,7 +81,7 @@ Reading Outputs
 
 Performance Notes
 - `turn_sec` includes LLM + tools for the step. Approx per‑tool latency is included; for precise per‑tool timing, add event timestamps in tools (optional enhancement).
-- If hitting Azure 429, increase sleeps or request quota increase.
+- Scripts insert human‑like pauses and exponential backoff to avoid Azure 429; tune with flags or environment as needed.
 
 Prompts and Behavior
 - System prompt `prompts/system.txt` (RU/ES/EN) encodes:
@@ -95,4 +95,3 @@ FAQ
 - “How to seed demo schedule?” → `scripts/seed_gcal_realistic.py`
 - “How to run tests?” → linear `run_scenarios_v2.py`, adaptive `run_adaptive_scenarios.py`
 - “How to view logs?” → `logs/stress_tests/` dialogs + metrics; live tail in `logs/adaptive_run.out`
-

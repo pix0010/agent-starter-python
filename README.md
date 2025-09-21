@@ -68,11 +68,18 @@ scripts/*.py                импорты/демо/рендер/QA (см. scrip
 ## Скрипты
 - `scripts/seed_gcal_realistic.py` — реалистичное наполнение календарей на N дней (первые дни плотнее, дальше реже). Флаги: `--days`, `--heavy-days`, `--reset` (очистить демо перед посевом).
 - `scripts/cleanup_gcal_demo.py` — очистка демо‑событий в Google Calendar; флаг `--also-realistic` убирает ранние «кодовые» записи.
-- `scripts/run_scenarios_v2.py` — 15 линейных сценариев (RU/ES/EN), замеряет `turn_sec` по шагам и записывает логи.
-- `scripts/run_adaptive_scenarios.py` — адаптивные сценарии: парсит TOOL_RESULT, сам выбирает слоты, задаёт нестандартные вопросы, иногда меняет намерение; записывает логи и метрики (в т.ч. приблизительную латентность инструментов на шаге).
-- `scripts/run_demo_booking.py` — короткий демонстрационный флоу: выбрать время → создать запись (и при необходимости отменить).
+- `scripts/run_scenarios_v2.py` — ~15 линейных сценариев (RU/ES/EN), сохраняет диалоги и метрики. Встроены «человеческие» паузы и бэкофф на 429/content filter, чтобы не ловить лимиты Azure.
+- `scripts/run_adaptive_scenarios.py` — адаптивные сценарии: парсит TOOL_RESULT, сам выбирает слоты, задаёт уточнения, иногда меняет намерение. Флаги для темпа и бэкоффа: `--sleep-between`, `--step-sleep`, `--max-retries`, `--retry-sleep`.
+- `scripts/run_demo_booking.py` — короткий демонстрационный флоу: выбрать время → создать запись (и при необходимости отменить). Добавлены небольшие паузы.
+- `scripts/run_quick_checks.py` — 2 быстрых smoke‑сценария (бронь «на любого мастера», поиск+отмена), логи в `logs/quick_checks/`.
 - `scripts/render_transcript.py` — конвертирует `logs/transcript_*.json` в HTML.
 - (Опц.) `scripts/seed_gcal_week.py` — упрощённый посев «Busy» на неделю (для быстрых демо).
+
+## Тестирование и логи
+- Быстрые проверки: `uv run python scripts/run_quick_checks.py` → логи в `logs/quick_checks/`.
+- Линейные сценарии: `uv run python scripts/run_scenarios_v2.py` → `logs/stress_tests/*.txt` и `*_metrics.json`.
+- Адаптивные сценарии: `uv run python scripts/run_adaptive_scenarios.py --sleep-between 6 --step-sleep 1.5 --max-retries 6 --retry-sleep 15`.
+- Скрипты вставляют паузы и бэкофф, чтобы не упираться в 429 Azure. При необходимости увеличивайте паузы или подайте заявку на рост квот Azure.
 
 ## Уборка и актуальность
 - Удалены устаревшие файлы: `db/barber/services.json`, `db/barber/staff.json`, `db/barber/store.json`, `db/barber/promt.txt`, `db/barber/greetings.txt`, `.DS_Store`, а также `info.docx` (больше не нужен).

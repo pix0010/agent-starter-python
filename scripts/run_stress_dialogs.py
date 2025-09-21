@@ -227,12 +227,25 @@ async def run_scenario(base_dir: Path, timestamp: str, scenario: Dict) -> Dict:
         async with AgentSession(llm=azure_llm) as session:
             await session.start(Assistant(_build_instructions()))
             for msg in scenario["messages"]:
-                run = await session.run(user_input=msg)
+                # human-like delay + retry wrapper
+                await asyncio.sleep(1.5)
+                tries = 0
+                while True:
+                    try:
+                        run = await session.run(user_input=msg)
+                        break
+                    except Exception as e:
+                        emsg = str(e).lower()
+                        tries += 1
+                        if tries <= 4 and ("429" in emsg or "rate limit" in emsg or "content_filter" in emsg):
+                            await asyncio.sleep(6 * tries)
+                            continue
+                        raise
                 events = getattr(run, "events", [])
                 assistant_events = [e for e in events if getattr(e, "type", "") == "message" and getattr(e.item, "role", "") == "assistant"]
                 if not assistant_events:
                     summary.setdefault("warnings", []).append(f"no-assistant-reply-after: {msg}")
-                await asyncio.sleep(2.5)
+                await asyncio.sleep(2.0)
 
             history = session.history.to_dict()
             transcript = _format_history(history)
@@ -259,7 +272,7 @@ async def main() -> None:
         summary = await run_scenario(out_dir, timestamp, scenario)
         summaries.append(summary)
         print(f"  -> log saved to {summary['log']}")
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
     summary_path = out_dir / f"{timestamp}_summary.json"
     summary_path.write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")
