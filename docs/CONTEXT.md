@@ -1,97 +1,58 @@
-Context Guide — Betrán Estilistas Agent
+# Context Guide — Betrán Estilistas Agent
 
-Purpose
-- Orient quickly: how to run the agent, seed Google Calendars, execute tests (linear/adaptive), read logs/metrics, and where data lives.
+Цель: быстрый чек‑лист для запуска, отладки и проверки бронирований.
 
-Prerequisites
-- Python 3.11+
-- uv package manager installed
-- Azure OpenAI + Azure Speech credentials
-- Google Cloud service account credentials for Calendar API
-- LiveKit account (URL, API key/secret)
+## 1. Установка и окружение
+1. `uv sync`
+2. `cp .env.example .env.local`
+3. Заполнить минимум: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `OPENAI_API_VERSION`, `N8N_BASE`, `N8N_USER`, `N8N_PASS`, `N8N_TIMEOUT`, `APP_TZ=Europe/Madrid`.
+4. (Опц.) `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_SERVICE_ACCOUNT_JSON`, `GCAL_CALENDAR_MAP` — нужны n8n и сидерам календарей.
 
-Environment Setup
-- Copy env template and fill values:
-  `cp .env.example .env.local`
-- Minimal variables in `.env.local`:
-  - LiveKit: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
-  - Azure Speech: `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`
-  - Azure OpenAI: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `OPENAI_API_VERSION`
-  - Google Calendar:
-    - `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/service_account.json`
-      (or `GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'`)
-    - `GCAL_CALENDAR_MAP='{"ruben":"<cal_id>","sara":"<cal_id>","alex":"<cal_id>","betran":"<cal_id>","pau":"<cal_id>"}'`
-    - Optional fallback: `GCAL_DEFAULT_CALENDAR_ID=<cal_id>` (not recommended in prod)
+## 2. Быстрый запуск
+- Предзагрузка моделей: `uv run python src/agent.py download-files`
+- Консольный режим: `AGENT_CONSOLE_SIMPLE=1 uv run python -m src.agent console`
+- Продовый воркер: `uv run python -m src.agent start`
+- Перезапуск LiveKit worker через `--watch`: `uv run python -m src.agent dev`
 
-Install deps
-- `uv sync`
+## 3. Бронирование через n8n
+- Инструменты `create_booking`, `cancel_booking`, `reschedule_booking`, `find_booking_by_phone` обращаются к n8n (`${N8N_BASE}/webhook/api/booking/*`, Basic Auth).
+- Агент генерирует слоты локально (`suggest_slots`). Итоговые проверки на занятость выполняет n8n, возвращая `200 {"ok":true,...}` или `409 {"ok":false,"error":{"code":"time_conflict"}}`.
+- Smoke (curl):
+  ```bash
+  N8N_BASE=... N8N_USER=... N8N_PASS=... ./tests_smoke.sh
+  ```
+  Скрипт делает create → reschedule → find → cancel.
 
-Run the Agent
-- First-time model prewarm: `uv run python src/agent.py download-files`
-- Modes:
-  - Console: `uv run python -m src.agent console`
-    - Plain prints: `AGENT_CONSOLE_SIMPLE=1 uv run python -m src.agent console`
-  - Dev (WebRTC clients): `uv run python -m src.agent dev`
-  - Prod worker: `uv run python -m src.agent start`
+## 4. Сценарии и тесты
+- Быстрые smoke-сценарии: `uv run python scripts/run_quick_checks.py`
+- Линейные сценарии: `uv run python scripts/run_scenarios_v2.py`
+- Адаптивные сценарии: `uv run python scripts/run_adaptive_scenarios.py --sleep-between 6 --step-sleep 1.5`
+- Ручной smoke для бронирований: `tests_smoke.sh` (curl → n8n)
+- Автотесты: `pytest` (нужен доступ к Azure GPT‑4o и внешней сети)
 
-Data (source of truth)
-- `db/barber/*.txt`
-  - `bertran_services_catalog.txt` — services, durations (min), indicative prices
-  - `bertran_master_profiles.txt` — masters and summaries/skills
-  - `bertran_kb_facts.txt` — address, hours, contacts
-  - `bertran_conversation_playbook.txt` — concise conversational patterns
-  - `betran_estilistas_plain.txt` — extended content
+## 5. Данные и промпты
+- `db/barber/*.txt` — услуги, мастера, факты, плейбук.
+- `prompts/system.txt` — правила диалога (RU/ES/EN), `prompts/greeting.txt` — приветствия.
 
-Google Calendar Integration
-- Create per‑master calendars; share each with the service account email (“Make changes to events”).
-- Map staff_id → calendar id in `GCAL_CALENDAR_MAP`.
-- Tools:
-  - `suggest_slots(service_id?, services?, start_iso?, party?, staff_id?)` — allocates contiguous 30‑min blocks for a single service or sum of services; filters by GCal occupancy; supports groups via `party`.
-  - `create_booking(name, phone, start_iso, service_id?, services?, staff_id?, duration_min?)` — creates one event; summary is human‑readable; codes/prices live in description and private extended properties.
-  - `cancel_booking(booking_id, staff_id)` / `find_booking_by_phone(phone, staff_id, days?)` / `reschedule_booking(booking_id, staff_id, new_start_iso, ...)`.
+## 6. Логи и артефакты
+- `logs/transcript_<room>_<ts>.json` — полная история сессии (сохраняется при shutdown).
+- `logs/quick_checks/` и `logs/stress_tests/` — сценарные диалоги и метрики.
+- `logs/contacts.csv` — данные из `remember_contact`.
+- Конвертация логов → чаты: `python scripts/convert_logs_to_chats.py --dir logs/stress_tests --index`.
 
-Seeding and Cleanup
-- Realistic seeding (first days heavier):
-  `PYTHONPATH=src python3 scripts/seed_gcal_realistic.py --reset --days 10 --heavy-days 2`
-  - `--reset` cleans demo entries first.
-- Cleanup only:
-  `PYTHONPATH=src python3 scripts/cleanup_gcal_demo.py --days-back 60 --days-forward 60 --also-realistic`
+## 7. Полезные команды
+```bash
+uv run python src/agent.py download-files      # prewarm моделей
+AGENT_CONSOLE_SIMPLE=1 uv run -m src.agent console
+uv run python scripts/run_quick_checks.py
+uv run python scripts/run_adaptive_scenarios.py --sleep-between 6 --step-sleep 1.5
+python scripts/render_transcript.py logs/transcript_<...>.json
+```
 
-Tests and Logs
-- Quick checks (2 scenarios, human‑paced):
-  `uv run python scripts/run_quick_checks.py`
-  - Output: `logs/quick_checks/*.txt` and `.json` + a `.comment.txt` per run.
+## 8. Траблшутинг
+- **Azure 429 / content filter** — увеличьте `--sleep-between`, `--retry-sleep` в сценариях или попросите расширить квоты.
+- **pytest падает с `httpx.ConnectError`** — нет выхода в интернет к Azure GPT‑4o. Запускайте в среде с сетью или мокайте LLM.
+- **Бронирование возвращает 409** — слот занят в календаре (n8n). Предложите другой через `suggest_slots`.
+- **n8n не отвечает** — перепроверьте `N8N_BASE/N8N_USER/N8N_PASS`, статус воркфлоу и права сервисного аккаунта в GCal.
 
-- Linear scripted scenarios (~15), human‑paced with backoff:
-  `uv run python scripts/run_scenarios_v2.py`
-  - Per scenario outputs:
-    - Dialog: `logs/stress_tests/<ts>_<id>.txt`
-    - Metrics: `logs/stress_tests/<ts>_<id>_metrics.json`
-
-- Adaptive scenarios (dynamic), human‑paced:
-  `uv run python scripts/run_adaptive_scenarios.py --sleep-between 6 --step-sleep 1.5 --max-retries 6 --retry-sleep 15`
-  - Behavior: parses tool results, auto‑picks slots, injects clarifications; built‑in backoff (429/content filter).
-  - Output: dialog + metrics in `logs/stress_tests/`.
-
-Reading Outputs
-- Live tail: `tail -f logs/adaptive_run.out`
-- Latest files: `ls -lt logs/stress_tests/`
-- Open dialog: `sed -n '1,160p' logs/stress_tests/<ts>_<id>.txt`
-- Metrics JSON: `cat logs/stress_tests/<ts>_<id>_metrics.json`
-
-Performance Notes
-- `turn_sec` includes LLM + tools for the step. Approx per‑tool latency is included; for precise per‑tool timing, add event timestamps in tools (optional enhancement).
-- Scripts insert human‑like pauses and exponential backoff to avoid Azure 429; tune with flags or environment as needed.
-
-Prompts and Behavior
-- System prompt `prompts/system.txt` (RU/ES/EN) encodes:
-  - Short answers, next‑step prompts, tool usage rules
-  - Booking flow: confirm service → suggest_slots → create_booking → remember_contact
-  - Packages: use `services=[...]` with suggest/create
-  - Party (groups): consecutive slots via `party`
-
-FAQ
-- “Where are services/masters defined?” → `db/barber/*.txt`
-- “How to seed demo schedule?” → `scripts/seed_gcal_realistic.py`
-- “How to run tests?” → linear `run_scenarios_v2.py`, adaptive `run_adaptive_scenarios.py`
-- “How to view logs?” → `logs/stress_tests/` dialogs + metrics; live tail in `logs/adaptive_run.out`
+Для детального описания структуры см. [filesystem.md](../filesystem.md), для обзора скриптов — [scripts/README.md](../scripts/README.md).

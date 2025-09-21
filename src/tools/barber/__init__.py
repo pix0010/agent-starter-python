@@ -1,4 +1,6 @@
-from .barber import (
+"""Salon knowledge base tools (services, availability, matching)."""
+
+from .toolbox import (
     load_barber_db,
     get_services,
     get_price,
